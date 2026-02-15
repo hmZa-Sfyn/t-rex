@@ -200,6 +200,7 @@ func (s *Shell) executeCommand(line string) error {
 				}
 				val := strings.Join(valParts, " ")
 				s.vars[name] = val
+				fmt.Printf("%s=%s\n", name, val)
 				return nil
 			}
 		}
@@ -211,6 +212,16 @@ func (s *Shell) executeCommand(line string) error {
 			name := m[1]
 			val := strings.TrimSpace(m[2])
 			s.vars[name] = val
+			fmt.Printf("%s=%s\n", name, val)
+			return nil
+		}
+
+		// shorthand: $name value  -> set variable
+		if strings.HasPrefix(parts[0], "$") && len(parts) >= 2 {
+			name := parts[0][1:]
+			val := strings.Join(parts[1:], " ")
+			s.vars[name] = val
+			fmt.Printf("%s=%s\n", name, val)
 			return nil
 		}
 	}
@@ -221,6 +232,15 @@ func (s *Shell) executeCommand(line string) error {
 		return err
 	}
 	if handled {
+		return nil
+	}
+
+	// Check foreach
+	fhandled, ferr := s.handleForeach(line)
+	if ferr != nil {
+		return ferr
+	}
+	if fhandled {
 		return nil
 	}
 
@@ -260,21 +280,38 @@ func (s *Shell) executePipeline(line string) error {
 	parts := strings.SplitN(line, "|", 2)
 	firstCmd := strings.TrimSpace(parts[0])
 
-	// Execute first command
-	cmdParts := trex_utils.ParseCommand(firstCmd)
-	if len(cmdParts) == 0 {
-		return nil
-	}
+	// If firstCmd is an array literal like: [1 2 3] or ["a" "b"]
+	var result map[string]interface{}
+	firstTrim := strings.TrimSpace(firstCmd)
+	if strings.HasPrefix(firstTrim, "[") && strings.HasSuffix(firstTrim, "]") {
+		inner := strings.TrimSpace(firstTrim[1 : len(firstTrim)-1])
+		// Use ParseCommand to respect quoted items
+		items := trex_utils.ParseCommand(inner)
+		result = map[string]interface{}{"output": items, "status": "success"}
+	} else {
+		// Execute first command
+		cmdParts := trex_utils.ParseCommand(firstCmd)
+		if len(cmdParts) == 0 {
+			return nil
+		}
 
-	cmd := cmdParts[0]
-	args := cmdParts[1:]
+		cmd := cmdParts[0]
+		args := cmdParts[1:]
 
-	result, err := s.executeModule(cmd, args)
-	if err != nil {
-		return err
-	}
-	if result == nil {
-		return nil
+		// expand variables in args and command
+		for i, a := range args {
+			args[i] = s.expandVars(a)
+		}
+		cmd = s.expandVars(cmd)
+
+		var err error
+		result, err = s.executeModule(cmd, args)
+		if err != nil {
+			return err
+		}
+		if result == nil {
+			return nil
+		}
 	}
 
 	// Process remaining pipes
@@ -480,6 +517,61 @@ func (s *Shell) handleForLoop(line string) (bool, error) {
 		}
 	}
 	// remove loop variable
+	delete(s.vars, varName)
+	return true, nil
+}
+
+// handleForeach handles constructs like:
+// foreach "sha256"|"sha512" as $x do { echo $x }
+func (s *Shell) handleForeach(line string) (bool, error) {
+	re := regexp.MustCompile(`(?s)^\s*foreach\s+(.+?)\s+as\s+\$([A-Za-z_][A-Za-z0-9_]*)\s+do\s*\{(.*)\}\s*$`)
+	m := re.FindStringSubmatch(line)
+	if m == nil {
+		return false, nil
+	}
+
+	listExpr := strings.TrimSpace(m[1])
+	varName := m[2]
+	body := m[3]
+
+	var items []string
+	// array literal
+	if strings.HasPrefix(listExpr, "[") && strings.HasSuffix(listExpr, "]") {
+		inner := strings.TrimSpace(listExpr[1 : len(listExpr)-1])
+		items = trex_utils.ParseCommand(inner)
+	} else if strings.Contains(listExpr, "|") {
+		parts := strings.Split(listExpr, "|")
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			// strip quotes
+			if (strings.HasPrefix(p, "\"") && strings.HasSuffix(p, "\"")) || (strings.HasPrefix(p, "'") && strings.HasSuffix(p, "'")) {
+				p = p[1 : len(p)-1]
+			}
+			items = append(items, p)
+		}
+	} else {
+		// single token
+		items = append(items, strings.Trim(listExpr, " \t\n\r\"'"))
+	}
+
+	// split body into commands by ';'
+	var cmds []string
+	for _, part := range strings.Split(body, ";") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			cmds = append(cmds, part)
+		}
+	}
+
+	for _, it := range items {
+		s.vars[varName] = it
+		for _, cmd := range cmds {
+			expanded := s.expandVars(cmd)
+			if err := s.executeCommand(expanded); err != nil {
+				return true, err
+			}
+		}
+	}
 	delete(s.vars, varName)
 	return true, nil
 }
