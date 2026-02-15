@@ -27,6 +27,10 @@ var Commands = map[string]string{
 	"pp": `pp
   Pretty print JSON output without standard formatting (pipe operation).
   Example: ls | pp`,
+
+	"tt": `tt
+  Tabular print JSON output without standard formatting (pipe operation).
+  Example: ls | tt`,
 }
 
 // GetHelp returns help text for a command
