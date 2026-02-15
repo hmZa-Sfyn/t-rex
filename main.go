@@ -338,27 +338,44 @@ func (s *Shell) executePipeline(line string) error {
 		case "tt":
 			result["__table_print"] = true
 		default:
-			// If the op corresponds to a module, execute it with previous output passed as argument
+			// If the op corresponds to a module, execute it with previous output passed as argument(s)
 			if modulePath, err := s.loader.FindModule(op); err == nil && modulePath != "" {
-				// prepare previous output as string argument
-				var prevArg string
+				// build callArgs by appending previous output appropriately
+				callArgs := make([]string, 0, len(args)+1)
+				callArgs = append(callArgs, args...)
+
 				if out, ok := result["output"]; ok {
-					// if complex, marshal to JSON string
 					switch v := out.(type) {
 					case string:
-						prevArg = v
+						// plain string -> pass as single arg
+						callArgs = append(callArgs, v)
+					case float64, int, int64, bool:
+						// numbers and bools -> format to string
+						callArgs = append(callArgs, fmt.Sprintf("%v", v))
+					case []interface{}:
+						// list -> pass each element as its own arg (stringified)
+						for _, e := range v {
+							switch ev := e.(type) {
+							case string:
+								callArgs = append(callArgs, ev)
+							default:
+								callArgs = append(callArgs, fmt.Sprintf("%v", ev))
+							}
+						}
+					case []string:
+						for _, e := range v {
+							callArgs = append(callArgs, e)
+						}
 					default:
-						if b, err := json.Marshal(v); err == nil {
-							prevArg = string(b)
+						// fallback: marshal to JSON and pass as single arg
+						if b, merr := json.Marshal(v); merr == nil {
+							callArgs = append(callArgs, string(b))
 						} else {
-							prevArg = fmt.Sprintf("%v", v)
+							callArgs = append(callArgs, fmt.Sprintf("%v", v))
 						}
 					}
-				} else {
-					prevArg = ""
 				}
 
-				callArgs := append(args, prevArg)
 				modResult, err := s.executeModule(op, callArgs)
 				if err != nil {
 					return err
