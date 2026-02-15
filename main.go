@@ -23,6 +23,9 @@ func main() {
 
 	flag.Parse()
 
+	// If a non-flag positional argument is provided and it's a file, execute it as script
+	args := flag.Args()
+
 	// Handle version flag
 	if *versionFlag {
 		showVersion()
@@ -36,6 +39,15 @@ func main() {
 	}
 
 	shell := NewShell()
+
+	// If a file path was passed as positional arg, execute file and exit
+	if len(args) > 0 {
+		candidate := args[0]
+		if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() {
+			shell.ExecuteFile(candidate)
+			os.Exit(0)
+		}
+	}
 
 	// Handle custom module path
 	if *pathFlag != "" {
@@ -268,6 +280,28 @@ func (s *Shell) executeModule(cmd string, args []string) map[string]interface{} 
 	return result
 }
 
+// ExecuteFile executes commands from a script file (one command per line)
+func (s *Shell) ExecuteFile(path string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		trex_utils.PrintError("Failed to read script: " + err.Error())
+		return
+	}
+
+	lines := strings.Split(string(data), "\n")
+	fmt.Printf("Running script: %s\n", path)
+	for idx, raw := range lines {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		// Prefix with line number for easier debugging
+		fmt.Printf("[%d] $ %s\n", idx+1, line)
+		s.history.Add(line)
+		s.executeCommand(line)
+	}
+}
+
 // printModuleNotFound prints a pretty error for missing module
 func (s *Shell) printModuleNotFound(cmd string) {
 	fmt.Println()
@@ -281,11 +315,27 @@ func (s *Shell) printModuleNotFound(cmd string) {
 // printExecutionError prints a pretty error for module execution failure
 func (s *Shell) printExecutionError(cmd string, modulePath string, err error) {
 	fmt.Println()
-	printRustStyleError("EXECUTION_ERROR", "Failed to execute module", []string{
+	ctx := []string{
 		fmt.Sprintf("Module: %s", cmd),
 		fmt.Sprintf("File: %s", modulePath),
 		fmt.Sprintf("Error: %s", err.Error()),
-	}, "Ensure the module returns valid JSON output")
+	}
+	printRustStyleError("EXECUTION_ERROR", "Failed to execute module", ctx, "Ensure the module returns valid JSON output")
+
+	// Also write error details to a log file under ~/.t-rex/error.log
+	if home, herr := os.UserHomeDir(); herr == nil {
+		trexDir := filepath.Join(home, ".t-rex")
+		os.MkdirAll(trexDir, 0755)
+		logPath := filepath.Join(trexDir, "error.log")
+		f, ferr := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if ferr == nil {
+			defer f.Close()
+			// Write a structured entry
+			entry := fmt.Sprintf("TIME: %s\nCOMMAND: %s\nFILE: %s\nERROR: %s\nHINT: %s\n---\n",
+				strings.TrimSpace(trex_utils.Timestamp()), cmd, modulePath, err.Error(), "Ensure the module returns valid JSON output")
+			f.WriteString(entry)
+		}
+	}
 	fmt.Println()
 }
 
