@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"trex_modules"
@@ -83,6 +85,7 @@ type Shell struct {
 	useColors      bool
 	promptColor    trex_utils.Color
 	promptTemplate string
+	vars           map[string]string
 }
 
 // NewShell creates a new shell instance
@@ -98,6 +101,7 @@ func NewShell() *Shell {
 		useColors:      true,
 		promptColor:    trex_utils.Cyan,
 		promptTemplate: "❯",
+		vars:           make(map[string]string),
 	}
 
 	loadConfig(shell)
@@ -125,7 +129,10 @@ func (s *Shell) ExecuteOnce(line string) {
 		return
 	}
 
-	s.executeCommand(line)
+	if err := s.executeCommand(line); err != nil {
+		// print brief error (detailed logging handled elsewhere)
+		trex_utils.PrintError(err.Error())
+	}
 }
 
 // Run starts the interactive shell
@@ -157,7 +164,10 @@ func (s *Shell) Run() {
 		}
 
 		s.history.Add(line)
-		s.executeCommand(line)
+		if err := s.executeCommand(line); err != nil {
+			// error already logged/printed by lower-level handlers
+			trex_utils.PrintError(err.Error())
+		}
 	}
 }
 
@@ -169,12 +179,41 @@ func (s *Shell) executeCommand(line string) error {
 		return nil
 	}
 
+	// variable assignment: set NAME VALUE  or let NAME = VALUE
+	parts := trex_utils.ParseCommand(line)
+	if len(parts) > 0 {
+		if parts[0] == "set" || parts[0] == "let" {
+			if len(parts) >= 3 {
+				name := parts[1]
+				if strings.HasPrefix(name, "$") {
+					name = name[1:]
+				}
+				// support optional '=' token
+				valParts := parts[2:]
+				if valParts[0] == "=" && len(valParts) > 1 {
+					valParts = valParts[1:]
+				}
+				val := strings.Join(valParts, " ")
+				s.vars[name] = val
+				return nil
+			}
+		}
+	}
+
+	// Check for forloop pattern: forloop RANGE as $var do { ... }
+	handled, err := s.handleForLoop(line)
+	if err != nil {
+		return err
+	}
+	if handled {
+		return nil
+	}
+
 	// Check for pipes
 	if trex_utils.HasPipe(line) {
 		return s.executePipeline(line)
 	}
 
-	parts := trex_utils.ParseCommand(line)
 	if len(parts) == 0 {
 		return nil
 	}
@@ -182,8 +221,14 @@ func (s *Shell) executeCommand(line string) error {
 	cmd := parts[0]
 	args := parts[1:]
 
+	// Expand variables in args
+	for i, a := range args {
+		args[i] = s.expandVars(a)
+	}
+
 	// Try to execute as Python module
-	result, err := s.executeModule(cmd, args)
+	var result map[string]interface{}
+	result, err = s.executeModule(cmd, args)
 	if err != nil {
 		return err
 	}
@@ -280,6 +325,25 @@ func (s *Shell) executePipeline(line string) error {
 	return nil
 }
 
+// expandVars replaces $var and ${var} in the input string using shell variables
+func (s *Shell) expandVars(input string) string {
+	// quick regex replacement
+	re := regexp.MustCompile(`\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))`)
+	return re.ReplaceAllStringFunc(input, func(m string) string {
+		// extract name
+		sub := ""
+		if strings.HasPrefix(m, "${") && strings.HasSuffix(m, "}") {
+			sub = m[2 : len(m)-1]
+		} else if strings.HasPrefix(m, "$") {
+			sub = m[1:]
+		}
+		if v, ok := s.vars[sub]; ok {
+			return v
+		}
+		return ""
+	})
+}
+
 // executeModule executes a Python module
 func (s *Shell) executeModule(cmd string, args []string) (map[string]interface{}, error) {
 	modulePath, err := s.loader.FindModule(cmd)
@@ -339,6 +403,73 @@ func (s *Shell) ExecuteFile(path string) {
 			return
 		}
 	}
+}
+
+// handleForLoop matches and executes constructs like:
+// forloop 0..5 as $x do { echo "192.168.0.$x" }
+func (s *Shell) handleForLoop(line string) (bool, error) {
+	re := regexp.MustCompile(`(?s)^\s*forloop\s+([^\s]+)\s+as\s+\$([A-Za-z_][A-Za-z0-9_]*)\s+do\s*\{(.*)\}\s*$`)
+	m := re.FindStringSubmatch(line)
+	if m == nil {
+		return false, nil
+	}
+	rangeExpr := m[1]
+	varName := m[2]
+	body := m[3]
+
+	var values []string
+	if strings.Contains(rangeExpr, "..") {
+		parts := strings.SplitN(rangeExpr, "..", 2)
+		start, err1 := strconv.Atoi(parts[0])
+		end, err2 := strconv.Atoi(parts[1])
+		if err1 != nil || err2 != nil {
+			return true, fmt.Errorf("invalid range: %s", rangeExpr)
+		}
+		if start <= end {
+			for i := start; i <= end; i++ {
+				values = append(values, strconv.Itoa(i))
+			}
+		} else {
+			for i := start; i >= end; i-- {
+				values = append(values, strconv.Itoa(i))
+			}
+		}
+	} else if strings.Contains(rangeExpr, ",") {
+		for _, part := range strings.Split(rangeExpr, ",") {
+			values = append(values, strings.TrimSpace(part))
+		}
+	} else {
+		// single number -> 0..n-1
+		if n, err := strconv.Atoi(rangeExpr); err == nil {
+			for i := 0; i < n; i++ {
+				values = append(values, strconv.Itoa(i))
+			}
+		} else {
+			return true, fmt.Errorf("invalid range expression: %s", rangeExpr)
+		}
+	}
+
+	// split body into commands by ';' or newlines
+	var cmds []string
+	for _, part := range strings.Split(body, ";") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			cmds = append(cmds, part)
+		}
+	}
+
+	for _, val := range values {
+		s.vars[varName] = val
+		for _, cmd := range cmds {
+			expanded := s.expandVars(cmd)
+			if err := s.executeCommand(expanded); err != nil {
+				return true, err
+			}
+		}
+	}
+	// remove loop variable
+	delete(s.vars, varName)
+	return true, nil
 }
 
 // printModuleNotFound prints a pretty error for missing module
