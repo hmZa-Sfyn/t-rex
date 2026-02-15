@@ -48,43 +48,50 @@ func (le *LineEditor) ReadLine(prompt string) (string, error) {
 
 		// Handle escape sequences (arrow keys, etc)
 		if ch == 27 { // ESC
-			// Read the next two bytes for arrow key sequence
-			buf2 := make([]byte, 2)
-			_, err := os.Stdin.Read(buf2)
-			if err != nil {
-				return "", err
+			// Read the next byte (should be '[' or 'O')
+			b1 := make([]byte, 1)
+			n, err := os.Stdin.Read(b1)
+			if err != nil || n == 0 {
+				continue
 			}
 
-			// Check for arrow key patterns: ESC [ A/B/C/D or ESC O A/B/C/D
-			if buf2[0] == '[' || buf2[0] == 'O' {
-				switch buf2[1] {
-				case 'A': // Up arrow - previous history
-					// Save current line once when starting history navigation
-					if le.historyIndex == -1 {
-						le.tempLine = string(line)
-					}
-					le.historyPrevious()
-					line = []rune(le.getHistoryLine())
-					cursorPos = len(line)
-					le.redrawLine(prompt, line, cursorPos)
+			if b1[0] != '[' && b1[0] != 'O' {
+				continue
+			}
 
-				case 'B': // Down arrow - next history
-					le.historyNext()
-					line = []rune(le.getHistoryLine())
-					cursorPos = len(line)
-					le.redrawLine(prompt, line, cursorPos)
+			// Read the final byte that indicates the arrow
+			b2 := make([]byte, 1)
+			n, err = os.Stdin.Read(b2)
+			if err != nil || n == 0 {
+				continue
+			}
 
-				case 'C': // Right arrow - move cursor right
-					if cursorPos < len(line) {
-						cursorPos++
-						fmt.Print("\033[C")
-					}
+			switch b2[0] {
+			case 'A': // Up arrow - previous history
+				if le.historyIndex == -1 {
+					le.tempLine = string(line)
+				}
+				le.historyPrevious()
+				line = []rune(le.getHistoryLine())
+				cursorPos = len(line)
+				le.redrawLine(prompt, line, cursorPos)
 
-				case 'D': // Left arrow - move cursor left
-					if cursorPos > 0 {
-						cursorPos--
-						fmt.Print("\033[D")
-					}
+			case 'B': // Down arrow - next history
+				le.historyNext()
+				line = []rune(le.getHistoryLine())
+				cursorPos = len(line)
+				le.redrawLine(prompt, line, cursorPos)
+
+			case 'C': // Right arrow - move cursor right
+				if cursorPos < len(line) {
+					cursorPos++
+					fmt.Print("\033[C")
+				}
+
+			case 'D': // Left arrow - move cursor left
+				if cursorPos > 0 {
+					cursorPos--
+					fmt.Print("\033[D")
 				}
 			}
 			continue
