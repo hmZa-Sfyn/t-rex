@@ -89,6 +89,37 @@ Write-Host ""
 Write-Host "📜 History is saved to:" -ForegroundColor Cyan
 Write-Host "   $TREX_HOME\history"
 Write-Host ""
+# Add or update alias helper: writes Set-Alias lines into user profiles
+function Add-OrUpdate-Alias {
+    param(
+        [Parameter(Mandatory=$true)][string]$Name,
+        [Parameter(Mandatory=$true)][string]$Command,
+        [string[]]$Profiles = @($PROFILE.CurrentUserCurrentHost, $PROFILE.CurrentUserAllHosts)
+    )
+
+    foreach ($p in $Profiles) {
+        if (-not $p) { continue }
+        if (-not (Test-Path $p)) { New-Item -ItemType File -Path $p -Force | Out-Null }
+
+        $lines = Get-Content -Path $p -ErrorAction SilentlyContinue
+        $aliasLine = "Set-Alias -Name $Name -Value '$Command'"
+        $pattern = "^\s*Set-Alias\s+-Name\s+$Name(\s+|$)"
+
+        if ($lines -match $pattern) {
+            $new = $lines | ForEach-Object { if ($_ -match $pattern) { $aliasLine } else { $_ } }
+            $new | Set-Content -Path $p -Encoding UTF8
+            Write-Host "Updated alias in $p" -ForegroundColor Green
+        } else {
+            Add-Content -Path $p -Value "`n# Added by t-rex setup on $(Get-Date)`n$aliasLine"
+            Write-Host "Added alias to $p" -ForegroundColor Green
+        }
+    }
+}
+
+# If we built a windows binary, add/update an alias for convenience
+if (Test-Path "$TREX_HOME\bin\t-rex.exe") {
+    Add-OrUpdate-Alias -Name t-rex -Command "$TREX_HOME\bin\t-rex.exe"
+}
 
 # Offer to add to PATH
 $addPath = Read-Host "Would you like to add T-Rex to your PATH? (Y/N)"

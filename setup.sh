@@ -98,3 +98,33 @@ echo ""
 echo "📜 History is saved to:"
 echo "   $TREX_HOME/history"
 echo ""
+
+# Add or update alias in ~/.bashrc and ~/.zshrc
+add_or_update_alias() {
+    local name="$1"
+    local cmd="$2"
+    if [ -z "$name" ] || [ -z "$cmd" ]; then
+        echo "Usage: add_or_update_alias <name> <command>"
+        return 1
+    fi
+    local files=("$HOME/.bashrc" "$HOME/.zshrc")
+    local alias_line="alias ${name}='${cmd}'"
+    for file in "${files[@]}"; do
+        mkdir -p "$(dirname "$file")"
+        touch "$file"
+        if grep -qE "^[[:space:]]*alias[[:space:]]+${name}=" "$file"; then
+            sed -i.bak -E "s|^[[:space:]]*alias[[:space:]]+${name}=.*|${alias_line}|" "$file" && rm -f "${file}.bak"
+            echo "Updated alias in $file"
+        else
+            echo "" >> "$file"
+            echo "# Added by t-rex setup on $(date)" >> "$file"
+            echo "${alias_line}" >> "$file"
+            echo "Added alias to $file"
+        fi
+    done
+}
+
+# If a built binary exists, create/update a convenient alias
+if [ -n "$TREX_HOME" ] && [ -x "$TREX_HOME/bin/t-rex" ]; then
+    add_or_update_alias t-rex "$TREX_HOME/bin/t-rex" || true
+fi
