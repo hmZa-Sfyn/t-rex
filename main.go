@@ -214,6 +214,37 @@ func (s *Shell) executePipeline(line string) {
 			result["__pretty_print"] = true
 		case "tt":
 			result["__table_print"] = true
+		default:
+			// If the op corresponds to a module, execute it with previous output passed as argument
+			if modulePath, err := s.loader.FindModule(op); err == nil && modulePath != "" {
+				// prepare previous output as string argument
+				var prevArg string
+				if out, ok := result["output"]; ok {
+					// if complex, marshal to JSON string
+					switch v := out.(type) {
+					case string:
+						prevArg = v
+					default:
+						if b, err := json.Marshal(v); err == nil {
+							prevArg = string(b)
+						} else {
+							prevArg = fmt.Sprintf("%v", v)
+						}
+					}
+				} else {
+					prevArg = ""
+				}
+
+				callArgs := append(args, prevArg)
+				modResult := s.executeModule(op, callArgs)
+				if modResult == nil {
+					// if module failed, stop pipeline
+					return
+				}
+				// Replace current result with module result for next steps
+				result = modResult
+				continue
+			}
 		}
 	}
 
