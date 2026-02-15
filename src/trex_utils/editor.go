@@ -10,6 +10,7 @@ import (
 type LineEditor struct {
 	history      *History
 	historyIndex int
+	tempLine     string
 }
 
 // NewLineEditor creates a new line editor
@@ -54,10 +55,14 @@ func (le *LineEditor) ReadLine(prompt string) (string, error) {
 				return "", err
 			}
 
-			// Check for arrow key pattern: ESC [ A/B/C/D
-			if buf2[0] == '[' {
+			// Check for arrow key patterns: ESC [ A/B/C/D or ESC O A/B/C/D
+			if buf2[0] == '[' || buf2[0] == 'O' {
 				switch buf2[1] {
 				case 'A': // Up arrow - previous history
+					// Save current line once when starting history navigation
+					if le.historyIndex == -1 {
+						le.tempLine = string(line)
+					}
 					le.historyPrevious()
 					line = []rune(le.getHistoryLine())
 					cursorPos = len(line)
@@ -123,6 +128,8 @@ func (le *LineEditor) ReadLine(prompt string) (string, error) {
 				fmt.Printf("\033[%dD", len(line)-cursorPos-1)
 			}
 			cursorPos++
+
+			// If user types while browsing history, keep tempLine until they return
 		}
 	}
 }
@@ -147,7 +154,8 @@ func (le *LineEditor) historyNext() {
 // getHistoryLine returns the current history line
 func (le *LineEditor) getHistoryLine() string {
 	if le.historyIndex == -1 {
-		return ""
+		// Return the temporarily-saved current line when not in history
+		return le.tempLine
 	}
 
 	historyEntries := le.history.GetAll()
