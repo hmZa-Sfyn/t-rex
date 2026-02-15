@@ -162,45 +162,58 @@ func (s *Shell) Run() {
 }
 
 // executeCommand processes a command
-func (s *Shell) executeCommand(line string) {
+func (s *Shell) executeCommand(line string) error {
+	// If the line is a file path, execute file
+	if fi, err := os.Stat(line); err == nil && !fi.IsDir() {
+		s.ExecuteFile(line)
+		return nil
+	}
+
 	// Check for pipes
 	if trex_utils.HasPipe(line) {
-		s.executePipeline(line)
-		return
+		return s.executePipeline(line)
 	}
 
 	parts := trex_utils.ParseCommand(line)
 	if len(parts) == 0 {
-		return
+		return nil
 	}
 
 	cmd := parts[0]
 	args := parts[1:]
 
 	// Try to execute as Python module
-	result := s.executeModule(cmd, args)
+	result, err := s.executeModule(cmd, args)
+	if err != nil {
+		return err
+	}
 	if result != nil {
 		s.printResult(result)
 	}
+
+	return nil
 }
 
 // executePipeline handles piped commands
-func (s *Shell) executePipeline(line string) {
+func (s *Shell) executePipeline(line string) error {
 	parts := strings.SplitN(line, "|", 2)
 	firstCmd := strings.TrimSpace(parts[0])
 
 	// Execute first command
 	cmdParts := trex_utils.ParseCommand(firstCmd)
 	if len(cmdParts) == 0 {
-		return
+		return nil
 	}
 
 	cmd := cmdParts[0]
 	args := cmdParts[1:]
 
-	result := s.executeModule(cmd, args)
+	result, err := s.executeModule(cmd, args)
+	if err != nil {
+		return err
+	}
 	if result == nil {
-		return
+		return nil
 	}
 
 	// Process remaining pipes
@@ -248,10 +261,13 @@ func (s *Shell) executePipeline(line string) {
 				}
 
 				callArgs := append(args, prevArg)
-				modResult := s.executeModule(op, callArgs)
+				modResult, err := s.executeModule(op, callArgs)
+				if err != nil {
+					return err
+				}
 				if modResult == nil {
 					// if module failed, stop pipeline
-					return
+					return nil
 				}
 				// Replace current result with module result for next steps
 				result = modResult
@@ -261,23 +277,24 @@ func (s *Shell) executePipeline(line string) {
 	}
 
 	s.printResult(result)
+	return nil
 }
 
 // executeModule executes a Python module
-func (s *Shell) executeModule(cmd string, args []string) map[string]interface{} {
+func (s *Shell) executeModule(cmd string, args []string) (map[string]interface{}, error) {
 	modulePath, err := s.loader.FindModule(cmd)
 	if err != nil {
 		s.printModuleNotFound(cmd)
-		return nil
+		return nil, os.ErrNotExist
 	}
 
 	result, err := s.executor.Execute(cmd, args)
 	if err != nil {
 		s.printExecutionError(cmd, modulePath, err)
-		return nil
+		return nil, err
 	}
 
-	return result
+	return result, nil
 }
 
 // ExecuteFile executes commands from a script file (one command per line)
@@ -298,7 +315,29 @@ func (s *Shell) ExecuteFile(path string) {
 		// Prefix with line number for easier debugging
 		fmt.Printf("[%d] $ %s\n", idx+1, line)
 		s.history.Add(line)
-		s.executeCommand(line)
+		if err := s.executeCommand(line); err != nil {
+			// Write enhanced error info including file and line number
+			if home, herr := os.UserHomeDir(); herr == nil {
+				trexDir := filepath.Join(home, ".t-rex")
+				os.MkdirAll(trexDir, 0755)
+				logPath := filepath.Join(trexDir, "error.log")
+				f, ferr := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+				if ferr == nil {
+					defer f.Close()
+					entry := fmt.Sprintf("TIME: %s\nSCRIPT: %s\nLINE: %d\nCOMMAND: %s\nERROR: %s\n---\n",
+						strings.TrimSpace(trex_utils.Timestamp()), path, idx+1, line, err.Error())
+					f.WriteString(entry)
+				}
+			}
+			// Print a concise rust-style error for script context
+			printRustStyleError("SCRIPT_ERROR", "Error running script", []string{
+				fmt.Sprintf("File: %s", path),
+				fmt.Sprintf("Line: %d", idx+1),
+				fmt.Sprintf("Command: %s", line),
+				fmt.Sprintf("Error: %s", err.Error()),
+			}, "Check the command and module output for errors")
+			return
+		}
 	}
 }
 
