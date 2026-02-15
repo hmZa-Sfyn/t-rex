@@ -179,9 +179,13 @@ func (s *Shell) executeCommand(line string) error {
 		return nil
 	}
 
-	// variable assignment: set NAME VALUE  or let NAME = VALUE
+	// variable assignment: support multiple syntaxes
+	//  - set NAME VALUE
+	//  - let NAME = VALUE
+	//  - NAME=VALUE or export NAME=VALUE
 	parts := trex_utils.ParseCommand(line)
 	if len(parts) > 0 {
+		// set/let handlers
 		if parts[0] == "set" || parts[0] == "let" {
 			if len(parts) >= 3 {
 				name := parts[1]
@@ -197,6 +201,16 @@ func (s *Shell) executeCommand(line string) error {
 				s.vars[name] = val
 				return nil
 			}
+		}
+
+		// assignment shorthand: NAME=VALUE or export NAME=VALUE
+		assignRe := regexp.MustCompile(`^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$`)
+		if assignRe.MatchString(line) {
+			m := assignRe.FindStringSubmatch(line)
+			name := m[1]
+			val := strings.TrimSpace(m[2])
+			s.vars[name] = val
+			return nil
 		}
 	}
 
@@ -218,7 +232,8 @@ func (s *Shell) executeCommand(line string) error {
 		return nil
 	}
 
-	cmd := parts[0]
+	// expand variables in command name as well
+	cmd := s.expandVars(parts[0])
 	args := parts[1:]
 
 	// Expand variables in args
