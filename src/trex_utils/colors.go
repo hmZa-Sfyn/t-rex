@@ -91,27 +91,27 @@ func BuildPrompt(symbol string, color Color, showUser, showDir, showEnv bool) st
 
 // PrintError prints an error in red
 func PrintError(msg string) {
-	fmt.Println(ColoredText("× "+msg, Red))
+	fmt.Println(ColoredText("x "+msg, Red))
 }
 
 // PrintSuccess prints success message in green
 func PrintSuccess(msg string) {
-	fmt.Println(ColoredText("✓ "+msg, Green))
+	fmt.Println(ColoredText("+ "+msg, Green))
 }
 
 // PrintInfo prints info message in blue
 func PrintInfo(msg string) {
-	fmt.Println(ColoredText("ℹ "+msg, Blue))
+	fmt.Println(ColoredText("i "+msg, Blue))
 }
 
 // PrintWarning prints warning in yellow
 func PrintWarning(msg string) {
-	fmt.Println(ColoredText("⚠ "+msg, Yellow))
+	fmt.Println(ColoredText("w "+msg, Yellow))
 }
 
 // PrintExit prints exit message
 func PrintExit(msg string) {
-	fmt.Println(ColoredText("👋 "+msg, Cyan))
+	fmt.Println(ColoredText(""+msg, Cyan))
 }
 
 // ExpandPrompt expands prompt variables like %u for username, %w for working dir
