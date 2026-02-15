@@ -275,22 +275,61 @@ func (s *Shell) executeCommand(line string) error {
 	return nil
 }
 
-// executePipeline handles piped commands
+// executePipeline executes a command pipeline that may start with a literal value,
+// array literal, or regular command, and supports piping through modules or special operators.
 func (s *Shell) executePipeline(line string) error {
+	// Split into first part and the rest after first |
 	parts := strings.SplitN(line, "|", 2)
-	firstCmd := strings.TrimSpace(parts[0])
+	firstPart := strings.TrimSpace(parts[0])
+	if firstPart == "" {
+		return nil
+	}
 
-	// If firstCmd is an array literal like: [1 2 3] or ["a" "b"]
 	var result map[string]interface{}
-	firstTrim := strings.TrimSpace(firstCmd)
+
+	// ────────────────────────────────────────────────
+	// Case 1: Array literal [ ... ]
+	// ────────────────────────────────────────────────
+	firstTrim := strings.TrimSpace(firstPart)
 	if strings.HasPrefix(firstTrim, "[") && strings.HasSuffix(firstTrim, "]") {
 		inner := strings.TrimSpace(firstTrim[1 : len(firstTrim)-1])
-		// Use ParseCommand to respect quoted items
-		items := trex_utils.ParseCommand(inner)
-		result = map[string]interface{}{"output": items, "status": "success"}
+		items := trex_utils.ParseCommand(inner) // respects quotes, your existing parser
+		result = map[string]interface{}{
+			"output": items,
+			"status": "success",
+		}
+	} else
+	// ────────────────────────────────────────────────
+	// Case 2: Quoted string literal "..." or '...'
+	// ────────────────────────────────────────────────
+	if (strings.HasPrefix(firstTrim, `"`) && strings.HasSuffix(firstTrim, `"`)) ||
+		(strings.HasPrefix(firstTrim, `'`) && strings.HasSuffix(firstTrim, `'`)) {
+		strVal := firstTrim[1 : len(firstTrim)-1]
+		// Note: this is basic quote removal — no full unescaping yet
+		result = map[string]interface{}{
+			"output": strVal,
+			"status": "success",
+		}
+	} else
+	// ────────────────────────────────────────────────
+	// Case 3: Number literal (int or float)
+	// ────────────────────────────────────────────────
+	if num, err := strconv.ParseFloat(firstTrim, 64); err == nil {
+		// Prefer float64 for generality (most modules expect strings anyway)
+		result = map[string]interface{}{
+			"output": num,
+			"status": "success",
+		}
+	} else if intVal, err := strconv.ParseInt(firstTrim, 10, 64); err == nil {
+		result = map[string]interface{}{
+			"output": intVal,
+			"status": "success",
+		}
 	} else {
-		// Execute first command
-		cmdParts := trex_utils.ParseCommand(firstCmd)
+		// ────────────────────────────────────────────────
+		// Case 4: Regular command
+		// ────────────────────────────────────────────────
+		cmdParts := trex_utils.ParseCommand(firstPart)
 		if len(cmdParts) == 0 {
 			return nil
 		}
@@ -298,9 +337,9 @@ func (s *Shell) executePipeline(line string) error {
 		cmd := cmdParts[0]
 		args := cmdParts[1:]
 
-		// expand variables in args and command
-		for i, a := range args {
-			args[i] = s.expandVars(a)
+		// Variable expansion
+		for i := range args {
+			args[i] = s.expandVars(args[i])
 		}
 		cmd = s.expandVars(cmd)
 
@@ -314,12 +353,24 @@ func (s *Shell) executePipeline(line string) error {
 		}
 	}
 
-	// Process remaining pipes
+	// No more pipes → just print and return
+	if len(parts) < 2 {
+		s.printResult(result)
+		return nil
+	}
+
+	// ────────────────────────────────────────────────
+	// Process piped stages
+	// ────────────────────────────────────────────────
 	pipeRest := strings.TrimSpace(parts[1])
 	pipeParts := strings.Split(pipeRest, "|")
 
 	for _, pipe := range pipeParts {
 		pipe = strings.TrimSpace(pipe)
+		if pipe == "" {
+			continue
+		}
+
 		cmdParts := trex_utils.ParseCommand(pipe)
 		if len(cmdParts) == 0 {
 			continue
@@ -333,64 +384,66 @@ func (s *Shell) executePipeline(line string) error {
 			if output, ok := result["output"].(map[string]interface{}); ok {
 				result["output"] = trex_utils.SelectFields(output, args)
 			}
+
 		case "pp":
 			result["__pretty_print"] = true
+
 		case "tt":
 			result["__table_print"] = true
-		default:
-			// If the op corresponds to a module, execute it with previous output passed as argument(s)
-			if modulePath, err := s.loader.FindModule(op); err == nil && modulePath != "" {
-				// build callArgs by appending previous output appropriately
-				callArgs := make([]string, 0, len(args)+1)
-				callArgs = append(callArgs, args...)
 
-				if out, ok := result["output"]; ok {
-					switch v := out.(type) {
-					case string:
-						// plain string -> pass as single arg
-						callArgs = append(callArgs, v)
-					case float64, int, int64, bool:
-						// numbers and bools -> format to string
+		default:
+			// Assume it's a module name
+			modulePath, err := s.loader.FindModule(op)
+			if err != nil || modulePath == "" {
+				return fmt.Errorf("unknown pipeline operator or module: %s", op)
+			}
+
+			// Prepare arguments: user-supplied args + previous output
+			callArgs := make([]string, 0, len(args)+1)
+			callArgs = append(callArgs, args...)
+
+			// Append previous output intelligently
+			if out, ok := result["output"]; ok && out != nil {
+				switch v := out.(type) {
+				case string:
+					callArgs = append(callArgs, v)
+
+				case float64, int, int64, bool:
+					callArgs = append(callArgs, fmt.Sprintf("%v", v))
+
+				case []interface{}:
+					for _, item := range v {
+						callArgs = append(callArgs, fmt.Sprintf("%v", item))
+					}
+
+				case []string:
+					callArgs = append(callArgs, v...)
+
+				default:
+					// JSON fallback for maps, structs, etc.
+					if b, merr := json.Marshal(v); merr == nil {
+						callArgs = append(callArgs, string(b))
+					} else {
 						callArgs = append(callArgs, fmt.Sprintf("%v", v))
-					case []interface{}:
-						// list -> pass each element as its own arg (stringified)
-						for _, e := range v {
-							switch ev := e.(type) {
-							case string:
-								callArgs = append(callArgs, ev)
-							default:
-								callArgs = append(callArgs, fmt.Sprintf("%v", ev))
-							}
-						}
-					case []string:
-						for _, e := range v {
-							callArgs = append(callArgs, e)
-						}
-					default:
-						// fallback: marshal to JSON and pass as single arg
-						if b, merr := json.Marshal(v); merr == nil {
-							callArgs = append(callArgs, string(b))
-						} else {
-							callArgs = append(callArgs, fmt.Sprintf("%v", v))
-						}
 					}
 				}
-
-				modResult, err := s.executeModule(op, callArgs)
-				if err != nil {
-					return err
-				}
-				if modResult == nil {
-					// if module failed, stop pipeline
-					return nil
-				}
-				// Replace current result with module result for next steps
-				result = modResult
-				continue
 			}
+
+			// Execute next module
+			modResult, err := s.executeModule(op, callArgs)
+			if err != nil {
+				return err
+			}
+			if modResult == nil {
+				return nil // module decided to stop / silent fail
+			}
+
+			// Carry forward the new result
+			result = modResult
 		}
 	}
 
+	// Final output
 	s.printResult(result)
 	return nil
 }
