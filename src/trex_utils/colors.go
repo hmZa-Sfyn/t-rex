@@ -32,10 +32,12 @@ func ColoredText(text string, color Color) string {
 // Banner prints the T-Rex banner
 func PrintBanner() {
 	banner := `
-  ╔══════════════════════════════════════╗
-  ║   🦖  T-REX SHELL  🦖                 ║
-  ║   JSON-based Command Execution       ║
-  ╚══════════════════════════════════════╝
+  dP                                       
+  88                                       
+d8888P          88d888b. .d8888b. dP.  .dP 
+  88   88888888 88'  '88 88ooood8  '8bd8'  
+  88            88       88.  ...  .d88b.  
+  dP            dP       '88888P' dP'  'dP
 `
 	fmt.Println(ColoredText(banner, Cyan))
 }
