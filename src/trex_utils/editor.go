@@ -23,114 +23,112 @@ func NewLineEditor(hist *History) *LineEditor {
 	}
 }
 
-// ReadLine reads a line from input with history support
 func (le *LineEditor) ReadLine(prompt string) (string, error) {
-	fmt.Print(prompt)
+	for { // ← retry on empty input
+		// Always start fresh: move to beginning + clear line
+		fmt.Print("\r\033[K") // \r → column 1, \033[K → clear to end of line
+		fmt.Print(prompt)
 
-	// ─── Enter raw mode using syscall/ioctl ───────────────────────
-	oldTermios, err := enableRawMode()
-	if err != nil {
-		return "", fmt.Errorf("failed to enter raw mode: %w", err)
-	}
-	defer func() {
-		_ = restoreTermios(oldTermios)
-	}()
-
-	reader := bufio.NewReader(os.Stdin)
-	var line []rune
-	var cursorPos int
-
-	for {
-		// read a rune to correctly handle UTF-8 input
-		r, _, err := reader.ReadRune()
+		oldTermios, err := enableRawMode()
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("failed to enter raw mode: %w", err)
 		}
+		defer func() { _ = restoreTermios(oldTermios) }()
 
-		// ESC sequence handling
-		if r == 27 {
-			// next should be '['
-			b1, err := reader.ReadByte()
-			if err != nil || b1 != '[' {
-				continue
-			}
-			b2, err := reader.ReadByte()
+		reader := bufio.NewReader(os.Stdin)
+		var line []rune
+		var cursorPos int
+
+		for {
+			r, _, err := reader.ReadRune()
 			if err != nil {
+				return "", err
+			}
+
+			if r == 27 { // ESC sequences (arrows etc.)
+				b1, _ := reader.ReadByte()
+				if b1 != '[' {
+					continue
+				}
+				b2, _ := reader.ReadByte()
+
+				switch b2 {
+				case 'A': // Up
+					if le.historyIndex == -1 {
+						le.tempLine = string(line)
+					}
+					le.historyPrevious()
+					line = []rune(le.getHistoryLine())
+					cursorPos = len(line)
+					le.redrawLine(prompt, line, cursorPos)
+				case 'B': // Down
+					le.historyNext()
+					line = []rune(le.getHistoryLine())
+					cursorPos = len(line)
+					le.redrawLine(prompt, line, cursorPos)
+				case 'C': // Right
+					if cursorPos < len(line) {
+						cursorPos++
+						fmt.Print("\033[C")
+					}
+				case 'D': // Left
+					if cursorPos > 0 {
+						cursorPos--
+						fmt.Print("\033[D")
+					}
+				}
 				continue
 			}
-			switch b2 {
-			case 'A': // Up
-				if le.historyIndex == -1 {
-					le.tempLine = string(line)
-				}
-				le.historyPrevious()
-				line = []rune(le.getHistoryLine())
-				cursorPos = len(line)
-				le.redrawLine(prompt, line, cursorPos)
 
-			case 'B': // Down
-				le.historyNext()
-				line = []rune(le.getHistoryLine())
-				cursorPos = len(line)
-				le.redrawLine(prompt, line, cursorPos)
-
-			case 'C': // Right
-				if cursorPos < len(line) {
-					cursorPos++
-					fmt.Print("\033[C")
-				}
-
-			case 'D': // Left
+			// Backspace
+			if r == 127 || r == 8 {
 				if cursorPos > 0 {
+					line = append(line[:cursorPos-1], line[cursorPos:]...)
 					cursorPos--
-					fmt.Print("\033[D")
+					le.redrawLine(prompt, line, cursorPos)
 				}
-			}
-			continue
-		}
-
-		// Backspace
-		if r == 127 || r == 8 {
-			if cursorPos > 0 {
-				line = append(line[:cursorPos-1], line[cursorPos:]...)
-				cursorPos--
-				le.redrawLine(prompt, line, cursorPos)
-			}
-			continue
-		}
-
-		// Enter (support trailing backslash for multiline)
-		if r == '\n' || r == '\r' {
-			// if last rune is a backslash, continue reading on new logical line
-			if len(line) > 0 && line[len(line)-1] == '\\' {
-				// remove trailing backslash and show continuation prompt
-				line = line[:len(line)-1]
-				fmt.Println()
-				fmt.Print("... ")
 				continue
 			}
-			fmt.Println()
-			le.tempLine = ""
-			return string(line), nil
-		}
 
-		// Ctrl+C
-		if r == 3 {
-			fmt.Println("^C")
-			return "", fmt.Errorf("interrupted")
-		}
+			// Enter
+			if r == '\n' || r == '\r' {
+				fmt.Print("\r\n") // consistent newline
 
-		// Printable
-		if r >= 32 && r != 127 {
-			if cursorPos == len(line) {
-				line = append(line, r)
-				fmt.Print(string(r))
-			} else {
-				// insert at cursor
-				line = append(line[:cursorPos], append([]rune{r}, line[cursorPos:]...)...)
-				le.redrawLine(prompt, line, cursorPos+1)
+				if len(line) == 0 {
+					// Empty enter → just go back to top of loop (fresh prompt)
+					// We already printed \r\033[K + prompt at beginning → clean
+					break
+				}
+
+				// Multiline continuation
+				if len(line) > 0 && line[len(line)-1] == '\\' {
+					line = line[:len(line)-1]
+					fmt.Print("... ")
+					continue
+				}
+
+				// Real command
+				le.tempLine = ""
+				return string(line), nil
 			}
-			cursorPos++
+
+			// Ctrl+C
+			if r == 3 {
+				fmt.Print("^C\r\n")
+				return "", fmt.Errorf("interrupted")
+			}
+
+			// Printable char
+			if r >= 32 && r != 127 {
+				if cursorPos == len(line) {
+					line = append(line, r)
+					fmt.Print(string(r))
+				} else {
+					line = append(line[:cursorPos], append([]rune{r}, line[cursorPos:]...)...)
+					le.redrawLine(prompt, line, cursorPos+1)
+				}
+				cursorPos++
+			}
 		}
 	}
 }
