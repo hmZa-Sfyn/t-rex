@@ -110,6 +110,8 @@ func (le *LineEditor) ReadLine(prompt string) (string, error) {
 		// Handle Enter
 		if ch == '\n' || ch == '\r' {
 			fmt.Println()
+			// clear temporary saved line when accepting input
+			le.tempLine = ""
 			return string(line), nil
 		}
 
