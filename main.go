@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"trex_errors"
 	"trex_modules"
 	"trex_utils"
 )
@@ -408,13 +409,9 @@ func (s *Shell) ExecuteFile(path string) {
 					f.WriteString(entry)
 				}
 			}
-			// Print a concise rust-style error for script context
-			printRustStyleError("SCRIPT_ERROR", "Error running script", []string{
-				fmt.Sprintf("File: %s", path),
-				fmt.Sprintf("Line: %d", idx+1),
-				fmt.Sprintf("Command: %s", line),
-				fmt.Sprintf("Error: %s", err.Error()),
-			}, "Check the command and module output for errors")
+			// Print a rich rust-style error with file/line/context
+			e := trex_errors.NewError(trex_errors.ErrorType("SCRIPT_ERROR"), "Error running script").WithLocation(path, idx+1).WithContext(line).WithHint("Check the command and module output for errors")
+			fmt.Print(e.Format())
 			return
 		}
 	}
@@ -526,24 +523,15 @@ func (s *Shell) printExecutionError(cmd string, modulePath string, err error) {
 
 // printRustStyleError prints an error in Rust-style format
 func printRustStyleError(errorType string, title string, context []string, hint string) {
-	// Error header
-	fmt.Printf("%s %s\n", trex_utils.ColoredText("×", trex_utils.Red), trex_utils.ColoredText(errorType, trex_utils.Red))
-	fmt.Println()
-
-	// Error message
-	fmt.Printf("  %s\n", title)
-	fmt.Println()
-
-	// Context
-	for _, line := range context {
-		fmt.Printf("  %s\n", line)
+	// Build TRexError and print its formatted output
+	e := trex_errors.NewError(trex_errors.ErrorType(errorType), title)
+	if len(context) > 0 {
+		e = e.WithContext(strings.Join(context, "\n"))
 	}
-	fmt.Println()
-
-	// Hint
 	if hint != "" {
-		fmt.Printf("  %s %s\n", trex_utils.ColoredText("help:", trex_utils.Cyan), hint)
+		e = e.WithHint(hint)
 	}
+	fmt.Print(e.Format())
 }
 
 // printResult prints command result
