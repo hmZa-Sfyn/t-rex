@@ -646,50 +646,129 @@ func (s *Shell) handleForeach(line string) (bool, error) {
 	return true, nil
 }
 
-// printModuleNotFound prints a pretty rustc-style error when a module cannot be found
+// printRustStyleError prints a diagnostic message in a rustc-like style
+// using only standard library + ANSI escape codes (no external dependencies)
+func printRustStyleError(
+	level string, // "ERROR", "WARNING", "NOTE"
+	title string,
+	location string, // "file.py:12" or empty
+	codeContext string, // offending line (or empty)
+	underlineStart int, // column where underline starts (0-based)
+	underlineLen int, // length of underline
+	message string,
+	hint string,
+	notes ...string,
+) {
+	const (
+		reset  = "\033[0m"
+		bold   = "\033[1m"
+		red    = "\033[31m"
+		yellow = "\033[33m"
+		cyan   = "\033[36m"
+		green  = "\033[32m"
+		gray   = "\033[90m"
+	)
+
+	levelColor := red
+	switch strings.ToUpper(level) {
+	case "WARNING":
+		levelColor = yellow
+	case "NOTE":
+		levelColor = cyan
+	}
+
+	fmt.Fprint(os.Stderr, "\n")
+
+	// Header
+	fmt.Fprintf(os.Stderr, "%s%s%s %s%s\n",
+		bold, levelColor, level, reset, bold+title+reset)
+
+	// Location arrow
+	if location != "" {
+		fmt.Fprintf(os.Stderr, "  %s-->%s %s\n", cyan, reset, location)
+	}
+
+	// Separator
+	fmt.Fprintf(os.Stderr, "  %s|%s\n", cyan, reset)
+
+	// Code context + underline
+	if codeContext != "" {
+		fmt.Fprintf(os.Stderr, "  %s|%s  %s\n", cyan, reset, codeContext)
+
+		if underlineLen > 0 {
+			spaces := strings.Repeat(" ", underlineStart)
+			underline := strings.Repeat("~", underlineLen)
+			fmt.Fprintf(os.Stderr, "  %s|%s  %s%s%s %s\n",
+				cyan, reset,
+				spaces, red+bold+underline+reset,
+				message)
+		} else {
+			fmt.Fprintf(os.Stderr, "  %s|%s  %s\n", cyan, reset, message)
+		}
+	} else {
+		// No code context
+		fmt.Fprintf(os.Stderr, "  %s|%s\n", cyan, reset)
+		fmt.Fprintf(os.Stderr, "  %s|%s  %s\n", cyan, reset, message)
+	}
+
+	// Hint section
+	if hint != "" {
+		fmt.Fprintf(os.Stderr, "  %s|%s\n", cyan, reset)
+		fmt.Fprintf(os.Stderr, "  %s=%s hint: %s%s\n", cyan, green, hint, reset)
+	}
+
+	// Notes
+	for _, note := range notes {
+		fmt.Fprintf(os.Stderr, "  %snote:%s %s\n", cyan, reset, note)
+	}
+
+	fmt.Fprintln(os.Stderr)
+}
+
+// printModuleNotFound prints a clean rust-style error when a module is not found
 func (s *Shell) printModuleNotFound(cmd string) {
 	printRustStyleError(
 		"ERROR",
 		"module not found",
-		"",   // no specific file:line here
-		"",   // no code snippet
-		0, 0, // no underline
+		"", // no specific file:line
+		"", // no code snippet
+		0, 0,
 		fmt.Sprintf("cannot find module '%s'", cmd),
-		"Make sure a file named "+cmd+".py (or .json, .yaml, etc.) exists in your modules directory",
-		fmt.Sprintf("Current search path: %s", s.moduleDir),
+		fmt.Sprintf("expected to find %s.py / %s.json / %s.yaml (or similar) in module directory", cmd, cmd, cmd),
+		fmt.Sprintf("current search path: %s", s.moduleDir),
+		"run 'ls -la "+s.moduleDir+"' to verify available modules",
 	)
 }
 
-// printExecutionError prints a rustc-style diagnostic when a module fails to execute
+// printExecutionError prints a rust-style diagnostic when module execution fails
 func (s *Shell) printExecutionError(cmd string, modulePath string, err error) {
-	// Try to make a relative path for cleaner output
+	// Try to make path relative for cleaner output
 	relPath := modulePath
 	if home, herr := os.UserHomeDir(); herr == nil {
 		base := filepath.Join(home, ".t-rex", "modules")
-		if r, err := filepath.Rel(base, modulePath); err == nil && !strings.HasPrefix(r, "..") {
+		if r, rerr := filepath.Rel(base, modulePath); rerr == nil && !strings.HasPrefix(r, "..") {
 			relPath = r
 		}
 	}
 
-	// If you have line number info from the executor, you could pass it here.
-	// For now we assume line is unknown → no underline / code snippet
 	printRustStyleError(
 		"ERROR",
-		"failed to execute module",
-		relPath, // file:line would go here if available (e.g. "sha256.py:42")
-		"",      // no offending line shown (could be added later)
-		0, 0,    // no underline
+		"module execution failed",
+		relPath, // e.g. "sha256.py" or full path if not relative
+		"",      // code snippet – can be added later if you parse traceback
+		0, 0,
 		err.Error(),
-		"Ensure the module prints valid JSON to stdout and nothing else (no print/debug statements)",
-		fmt.Sprintf("Module path: %s", modulePath),
+		"module must print **valid JSON** to stdout and nothing else (no stray prints, debug statements, or syntax errors)",
+		fmt.Sprintf("full path: %s", modulePath),
+		"check Python syntax, imports, and ensure output is json.dumps(...) compatible",
 	)
 
 	// ────────────────────────────────────────────────
-	// Log to ~/.t-rex/error.log (unchanged)
+	// Write structured log entry to ~/.t-rex/error.log
 	// ────────────────────────────────────────────────
 	if home, herr := os.UserHomeDir(); herr == nil {
 		trexDir := filepath.Join(home, ".t-rex")
-		if err := os.MkdirAll(trexDir, 0755); err != nil {
+		if merr := os.MkdirAll(trexDir, 0755); merr != nil {
 			return
 		}
 
@@ -702,100 +781,16 @@ func (s *Shell) printExecutionError(cmd string, modulePath string, err error) {
 
 		timestamp := strings.TrimSpace(trex_utils.Timestamp())
 		entry := fmt.Sprintf(
-			"TIME: %s\n"+
-				"COMMAND: %s\n"+
-				"FILE: %s\n"+
-				"ERROR: %s\n"+
-				"HINT: Ensure the module returns valid JSON output\n"+
-				"---\n",
+			"[%s] EXECUTION_ERROR\n"+
+				"  Command: %s\n"+
+				"  Module:  %s\n"+
+				"  Error:   %s\n"+
+				"  Hint:    Ensure valid JSON output\n"+
+				"----------------------------------------\n",
 			timestamp, cmd, modulePath, err.Error(),
 		)
 		_, _ = f.WriteString(entry)
 	}
-}
-
-// printRustStyleError prints an error in Rust-style format
-// printRustStyleError prints a diagnostic message in a style very close to rustc
-// using only ANSI escape codes (no external color libraries)
-func printRustStyleError(
-	level string, // "ERROR", "WARNING", "NOTE"
-	title string,
-	location string, // "file.go:12:8" or "script.trex:5" or empty
-	codeContext string, // the offending line or few lines
-	underlineStart int, // 0-based column where underline starts
-	underlineLen int, // how many characters to underline
-	message string, // main error message
-	hint string, // optional hint
-	notes ...string, // additional notes
-) {
-	const (
-		reset  = "\033[0m"
-		bold   = "\033[1m"
-		red    = "\033[31m"
-		yellow = "\033[33m"
-		cyan   = "\033[36m"
-		green  = "\033[32m"
-		gray   = "\033[90m"
-	)
-
-	// Decide color for level
-	levelColor := red
-	switch strings.ToUpper(level) {
-	case "WARNING":
-		levelColor = yellow
-	case "NOTE":
-		levelColor = cyan
-	}
-
-	fmt.Fprint(os.Stderr, "\n")
-
-	// Header ────────────────────────────────────────────────
-	fmt.Fprintf(os.Stderr, "%s%s%s: %s%s\n",
-		bold, levelColor, level, reset, title)
-
-	// Location
-	if location != "" {
-		fmt.Fprintf(os.Stderr, "%s   --> %s%s\n", cyan, location, reset)
-	}
-
-	// Separator
-	fmt.Fprintf(os.Stderr, "%s    |%s\n", cyan, reset)
-
-	// Code + underline
-	if codeContext != "" {
-		// line number placeholder (we don't use real numbers here)
-		fmt.Fprintf(os.Stderr, "%s %3s |%s %s\n",
-			cyan, " ", reset, codeContext)
-
-		if underlineLen > 0 {
-			underline := strings.Repeat("~", underlineLen)
-			spaces := strings.Repeat(" ", underlineStart)
-
-			fmt.Fprintf(os.Stderr, "%s %3s |%s %s%s%s %s\n",
-				cyan, " ", reset,
-				spaces, red+bold+underline+reset,
-				message)
-		} else {
-			// Just message when no underline
-			fmt.Fprintf(os.Stderr, "%s %3s |%s %s\n", cyan, " ", reset, message)
-		}
-	} else {
-		// No code context → just message
-		fmt.Fprintf(os.Stderr, "%s %3s |%s\n", cyan, " ", reset)
-		fmt.Fprintf(os.Stderr, "%s     =%s %s\n", cyan, reset, message)
-	}
-
-	// Hint
-	if hint != "" {
-		fmt.Fprintf(os.Stderr, "%s     =%s hint: %s%s\n", cyan, green, hint, reset)
-	}
-
-	// Notes
-	for _, note := range notes {
-		fmt.Fprintf(os.Stderr, "%snote:%s %s\n", cyan, reset, note)
-	}
-
-	fmt.Fprintln(os.Stderr)
 }
 
 // printResult prints command result
