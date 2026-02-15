@@ -1,0 +1,3 @@
+# loop_sum.trex
+# Generate a sequence and sum it
+forloop 1 5 | sum

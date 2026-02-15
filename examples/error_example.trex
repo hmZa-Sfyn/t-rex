@@ -1,0 +1,3 @@
+# error_example.trex
+# Run the intentionally-broken module to test error formatting
+brokenmodule

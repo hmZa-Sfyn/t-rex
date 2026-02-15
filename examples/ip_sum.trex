@@ -1,0 +1,3 @@
+# ip_sum.trex
+# Fetch your IP and sum its parts
+whatismyip | select ip | split . | sum

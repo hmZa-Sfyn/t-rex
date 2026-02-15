@@ -1,0 +1,3 @@
+# if_example.trex
+# Evaluate a simple condition
+ifpy "1 == 1"

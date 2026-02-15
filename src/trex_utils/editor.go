@@ -4,172 +4,176 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"os/exec"
+
+	"golang.org/x/term"
 )
 
-// LineEditor handles interactive line editing with history
+// History is assumed to be an interface or type with this method.
+// You must provide it (example stub below if you don't have one yet).
+type History interface {
+	GetAll() []string // returns history entries, oldest first
+	Add(string)       // optional – called when you want to save the final line
+}
+
+// LineEditor provides basic readline-like editing with history
 type LineEditor struct {
-	history      *History
-	historyIndex int
-	tempLine     string
+	history      History
+	historyIndex int    // -1 = current (editing) line
+	tempLine     string // saved editing line when navigating history
 }
 
-// historyPrevious moves to previous history entry
-func (le *LineEditor) historyPrevious() {
-	historyEntries := le.history.GetAll()
-	if le.historyIndex < len(historyEntries)-1 {
-		le.historyIndex++
-	}
-}
-
-// historyNext moves to next history entry
-func (le *LineEditor) historyNext() {
-	if le.historyIndex > 0 {
-		le.historyIndex--
-	} else if le.historyIndex == 0 {
-		le.historyIndex = -1
-	}
-}
-
-// NewLineEditor creates a new line editor
-func NewLineEditor(hist *History) *LineEditor {
+// NewLineEditor creates a new LineEditor
+func NewLineEditor(hist History) *LineEditor {
 	return &LineEditor{
 		history:      hist,
 		historyIndex: -1,
+		tempLine:     "",
 	}
 }
 
-// ReadLine reads a line from input with history support
+// ReadLine reads one line with basic editing and history support
 func (le *LineEditor) ReadLine(prompt string) (string, error) {
 	fmt.Print(prompt)
 
-	// enable raw mode with stty so we can read escape sequences reliably
-	rawCmd := exec.Command("sh", "-c", "stty raw -echo -icanon min 1 time 0")
-	restoreCmd := exec.Command("sh", "-c", "stty sane")
-	_ = rawCmd.Run()
-	defer restoreCmd.Run()
+	// Enter raw mode
+	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
+	if err != nil {
+		return "", fmt.Errorf("failed to enter raw mode: %w", err)
+	}
+	defer func() {
+		_ = term.Restore(int(os.Stdin.Fd()), oldState)
+	}()
 
 	reader := bufio.NewReader(os.Stdin)
+
 	var line []rune
-	var cursorPos int
+	var cursor int // cursor position (0..len(line))
 
 	for {
-		// read a rune to correctly handle UTF-8 input
 		r, _, err := reader.ReadRune()
 		if err != nil {
 			return "", err
 		}
 
-		// ESC sequence handling
-		if r == 27 {
-			// next should be '[' or 'O'
+		switch r {
+		// ──────────────── Arrow keys ────────────────
+		case 27: // ESC → possible escape sequence
 			b1, err := reader.ReadByte()
-			if err != nil {
-				continue
+			if err != nil || b1 != '[' {
+				continue // plain ESC → ignore
 			}
-			if b1 != '[' && b1 != 'O' {
-				continue
-			}
+
 			b2, err := reader.ReadByte()
 			if err != nil {
 				continue
 			}
+
 			switch b2 {
 			case 'A': // Up
 				if le.historyIndex == -1 {
 					le.tempLine = string(line)
 				}
 				le.historyPrevious()
-				line = []rune(le.getHistoryLine())
-				cursorPos = len(line)
-				le.redrawLine(prompt, line, cursorPos)
+				line = []rune(le.getHistoryEntry())
+				cursor = len(line)
+				le.redraw(prompt, line, cursor)
+
 			case 'B': // Down
 				le.historyNext()
-				line = []rune(le.getHistoryLine())
-				cursorPos = len(line)
-				le.redrawLine(prompt, line, cursorPos)
+				line = []rune(le.getHistoryEntry())
+				cursor = len(line)
+				le.redraw(prompt, line, cursor)
+
 			case 'C': // Right
-				if cursorPos < len(line) {
-					cursorPos++
-					fmt.Print("\033[C")
+				if cursor < len(line) {
+					cursor++
+					fmt.Print("\x1b[C")
 				}
+
 			case 'D': // Left
-				if cursorPos > 0 {
-					cursorPos--
-					fmt.Print("\033[D")
+				if cursor > 0 {
+					cursor--
+					fmt.Print("\x1b[D")
 				}
 			}
-			continue
-		}
 
-		// Backspace
-		if r == 127 || r == 8 {
-			if cursorPos > 0 {
-				line = append(line[:cursorPos-1], line[cursorPos:]...)
-				cursorPos--
-				le.redrawLine(prompt, line, cursorPos)
+		// ──────────────── Backspace ────────────────
+		case 127, 8:
+			if cursor > 0 {
+				line = append(line[:cursor-1], line[cursor:]...)
+				cursor--
+				le.redraw(prompt, line, cursor)
 			}
-			continue
-		}
 
-		// Enter
-		if r == '\n' || r == '\r' {
+		// ──────────────── Enter ────────────────
+		case '\r', '\n':
 			fmt.Println()
+			final := string(line)
+			// Optional: save to history here (if you want)
+			// le.history.Add(final)
 			le.tempLine = ""
-			return string(line), nil
-		}
+			return final, nil
 
-		// Ctrl+C
-		if r == 3 {
+		// ──────────────── Ctrl+C ────────────────
+		case 3:
 			fmt.Println("^C")
-			return "", fmt.Errorf("interrupted")
-		}
+			return "", fmt.Errorf("user interrupted")
 
-		// Printable
-		if r >= 32 {
-			if cursorPos == len(line) {
-				line = append(line, r)
-				fmt.Print(string(r))
-			} else {
-				// insert at cursor
-				line = append(line[:cursorPos], append([]rune{r}, line[cursorPos:]...)...)
-				le.redrawLine(prompt, line, cursorPos+1)
+		// ──────────────── Printable characters ────────────────
+		default:
+			if r >= 32 && r != 127 {
+				// Insert at cursor position
+				line = append(line[:cursor], append([]rune{r}, line[cursor:]...)...)
+				cursor++
+				le.redraw(prompt, line, cursor)
 			}
-			cursorPos++
 		}
 	}
 }
 
-// getHistoryLine returns the current history line
-func (le *LineEditor) getHistoryLine() string {
+func (le *LineEditor) historyPrevious() {
+	entries := le.history.GetAll()
+	if le.historyIndex < len(entries)-1 {
+		le.historyIndex++
+	}
+}
+
+func (le *LineEditor) historyNext() {
+	if le.historyIndex > 0 {
+		le.historyIndex--
+	} else {
+		le.historyIndex = -1 // back to current line
+	}
+}
+
+func (le *LineEditor) getHistoryEntry() string {
 	if le.historyIndex == -1 {
-		// Return the temporarily-saved current line when not in history
 		return le.tempLine
 	}
 
-	historyEntries := le.history.GetAll()
-	if le.historyIndex >= len(historyEntries) {
+	entries := le.history.GetAll()
+	if le.historyIndex >= len(entries) {
 		return ""
 	}
 
-	return historyEntries[len(historyEntries)-1-le.historyIndex]
+	// Assuming GetAll() returns oldest → newest
+	return entries[len(entries)-1-le.historyIndex]
 }
 
-// redrawLine redraws the current line
-func (le *LineEditor) redrawLine(prompt string, line []rune, cursorPos int) {
-	// Move to start of line
+func (le *LineEditor) redraw(prompt string, runes []rune, pos int) {
+	// Return to start of line
 	fmt.Print("\r")
 
-	// Clear the line
-	fmt.Print("\033[K")
+	// Clear to end of line
+	fmt.Print("\x1b[K")
 
-	// Print prompt and line
+	// Print prompt + current content
 	fmt.Print(prompt)
-	fmt.Print(string(line))
+	fmt.Print(string(runes))
 
-	// Move cursor to correct position
-	if cursorPos < len(line) {
-		moveBack := len(line) - cursorPos
-		fmt.Printf("\033[%dD", moveBack)
+	// Move cursor back to correct position
+	if pos < len(runes) {
+		distance := len(runes) - pos
+		fmt.Printf("\x1b[%dD", distance)
 	}
 }
