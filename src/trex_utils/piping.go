@@ -2,6 +2,7 @@ package trex_utils
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -144,7 +145,31 @@ func ExecutePipeline(data map[string]interface{}, pipeline *Pipeline) (map[strin
 		switch op {
 		case "select":
 			if obj, ok := current["output"].(map[string]interface{}); ok {
-				current["output"] = SelectFields(obj, args)
+				// Join all remaining tokens and split properly by comma
+				fullArg := strings.TrimSpace(strings.Join(args, " "))
+				if fullArg == "" || fullArg == "*" {
+					// select * → keep everything
+					break
+				}
+				var fields []string
+				for _, f := range strings.Split(fullArg, ",") {
+					trimmed := strings.TrimSpace(f)
+					if trimmed != "" {
+						fields = append(fields, trimmed)
+					}
+				}
+				if len(fields) > 0 {
+					selected := make(map[string]interface{})
+					for _, field := range fields {
+						if val, exists := obj[field]; exists {
+							selected[field] = val
+						} else {
+							// Optional: log missing field
+							// fmt.Fprintf(os.Stderr, "warning: field %q not found\n", field)
+						}
+					}
+					current["output"] = selected
+				}
 			}
 		case "pp":
 			current["__pretty_print"] = true
@@ -156,24 +181,102 @@ func ExecutePipeline(data map[string]interface{}, pipeline *Pipeline) (map[strin
 	return current, nil
 }
 
-// TablePrint formats data as a pretty table
+// SplitCommaFields splits comma-separated list and trims each item
+func SplitCommaFields(s string) []string {
+	var result []string
+	for _, f := range strings.Split(s, ",") {
+		trimmed := strings.TrimSpace(f)
+		if trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	return result
+}
+
+// TablePrint formats data as a pretty table — vertical for single object, horizontal for array
 func TablePrint(data interface{}) string {
 	switch v := data.(type) {
-	case []interface{}:
-		return formatTable(v)
 	case map[string]interface{}:
-		return formatMapAsTable(v)
+		// Single object → vertical table (one row per key-value)
+		return formatMapAsVerticalTable(v)
+	case []interface{}:
+		// Array of objects → classic horizontal table
+		return formatTable(v)
 	default:
 		return PrettyPrint(data)
 	}
 }
 
+// formatMapAsVerticalTable prints a single map as a vertical key-value table
+func formatMapAsVerticalTable(m map[string]interface{}) string {
+	if len(m) == 0 {
+		return "(empty)\n"
+	}
+
+	var result strings.Builder
+	var keys []string
+	maxKeyLen := 0
+
+	// Collect and sort keys for consistent order
+	for key := range m {
+		keys = append(keys, key)
+		if len(key) > maxKeyLen {
+			maxKeyLen = len(key)
+		}
+	}
+	sort.Strings(keys)
+
+	// Top border
+	result.WriteString("┌")
+	result.WriteString(strings.Repeat("─", maxKeyLen+2))
+	result.WriteString("┬")
+	result.WriteString(strings.Repeat("─", 42))
+	result.WriteString("┐\n")
+
+	// Header
+	result.WriteString("│ ")
+	result.WriteString(padRight("Field", maxKeyLen))
+	result.WriteString(" │ ")
+	result.WriteString(padRight("Value", 40))
+	result.WriteString(" │\n")
+
+	// Separator
+	result.WriteString("├")
+	result.WriteString(strings.Repeat("─", maxKeyLen+2))
+	result.WriteString("┼")
+	result.WriteString(strings.Repeat("─", 42))
+	result.WriteString("┤\n")
+
+	// One row per field
+	for _, key := range keys {
+		valStr := fmt.Sprintf("%v", m[key])
+		if len(valStr) > 40 {
+			valStr = valStr[:37] + "..."
+		}
+
+		result.WriteString("│ ")
+		result.WriteString(padRight(key, maxKeyLen))
+		result.WriteString(" │ ")
+		result.WriteString(padRight(valStr, 40))
+		result.WriteString(" │\n")
+	}
+
+	// Bottom border
+	result.WriteString("└")
+	result.WriteString(strings.Repeat("─", maxKeyLen+2))
+	result.WriteString("┴")
+	result.WriteString(strings.Repeat("─", 42))
+	result.WriteString("┘\n")
+
+	return result.String()
+}
+
+// formatTable formats array of objects as horizontal table
 func formatTable(arr []interface{}) string {
 	if len(arr) == 0 {
 		return "(empty)\n"
 	}
 
-	// Check if all items are maps
 	var items []map[string]interface{}
 	var columns []string
 	columnWidths := make(map[string]int)
@@ -197,7 +300,8 @@ func formatTable(arr []interface{}) string {
 		return PrettyPrint(arr)
 	}
 
-	// Ensure minimum column widths
+	sort.Strings(columns)
+
 	for _, col := range columns {
 		if columnWidths[col] < len(col) {
 			columnWidths[col] = len(col)
@@ -224,7 +328,7 @@ func formatTable(arr []interface{}) string {
 	}
 	result.WriteString("\n")
 
-	// Header separator
+	// Separator
 	result.WriteString("├")
 	for i, col := range columns {
 		result.WriteString(strings.Repeat("─", columnWidths[col]+2))
