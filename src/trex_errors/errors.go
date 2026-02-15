@@ -73,10 +73,10 @@ func (e *TRexError) Format() string {
 
 	if e.File != "" && e.Line > 0 {
 		builder.WriteString(fmt.Sprintf("\n   ╭─[%s:%d:1]\n", e.File, e.Line))
-		builder.WriteString(fmt.Sprintf("%d │ %s\n", e.Line, e.Context))
+		builder.WriteString(fmt.Sprintf(" %d │ %s\n", e.Line, e.Context))
 		// Use rune count for correct width when context contains Unicode
 		ctxWidth := utf8.RuneCountInString(e.Context)
-		builder.WriteString("   │ " + strings.Repeat("─", ctxWidth) + "─\n")
+		builder.WriteString("   │ " + strings.Repeat("─", ctxWidth) + "\n")
 		builder.WriteString("   ╰────\n")
 	}
 
