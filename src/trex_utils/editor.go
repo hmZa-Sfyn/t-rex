@@ -99,8 +99,16 @@ func (le *LineEditor) ReadLine(prompt string) (string, error) {
 			continue
 		}
 
-		// Enter
+		// Enter (support trailing backslash for multiline)
 		if r == '\n' || r == '\r' {
+			// if last rune is a backslash, continue reading on new logical line
+			if len(line) > 0 && line[len(line)-1] == '\\' {
+				// remove trailing backslash and show continuation prompt
+				line = line[:len(line)-1]
+				fmt.Println()
+				fmt.Print("... ")
+				continue
+			}
 			fmt.Println()
 			le.tempLine = ""
 			return string(line), nil

@@ -3,6 +3,16 @@ package trex_errors
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
+)
+
+// ANSI color codes (avoid importing trex_utils to prevent cycles)
+const (
+	ansiReset = "\033[0m"
+	ansiRed   = "\033[31m"
+	ansiCyan  = "\033[36m"
+	ansiBold  = "\033[1m"
+	ansiDim   = "\033[2m"
 )
 
 // ErrorType represents different error categories
@@ -57,18 +67,21 @@ func (e *TRexError) WithHint(hint string) *TRexError {
 // Format returns a Rust-style error message
 func (e *TRexError) Format() string {
 	builder := strings.Builder{}
-	builder.WriteString("× " + string(e.Type) + "\n\n")
+	// Header with colored type
+	builder.WriteString(ansiRed + ansiBold + "× " + string(e.Type) + ansiReset + "\n\n")
 	builder.WriteString("  " + e.Message + "\n")
 
 	if e.File != "" && e.Line > 0 {
 		builder.WriteString(fmt.Sprintf("\n   ╭─[%s:%d:1]\n", e.File, e.Line))
 		builder.WriteString(fmt.Sprintf("%d │ %s\n", e.Line, e.Context))
-		builder.WriteString("   │ " + strings.Repeat("─", len(e.Context)) + "─\n")
+		// Use rune count for correct width when context contains Unicode
+		ctxWidth := utf8.RuneCountInString(e.Context)
+		builder.WriteString("   │ " + strings.Repeat("─", ctxWidth) + "─\n")
 		builder.WriteString("   ╰────\n")
 	}
 
 	if e.Hint != "" {
-		builder.WriteString(fmt.Sprintf("  help: %s\n", e.Hint))
+		builder.WriteString(fmt.Sprintf("  %s %s\n", ansiCyan+"help:"+ansiReset, e.Hint))
 	}
 
 	return builder.String()
