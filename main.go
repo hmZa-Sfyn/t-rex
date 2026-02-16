@@ -264,7 +264,7 @@ func (s *Shell) executeCommand(line string) error {
 
 	// Try to execute as Python module
 	var result map[string]interface{}
-	result, err = s.executeModule(cmd, args)
+	result, err = s.executeModule(strings.Split(cmd, " "), args)
 	if err != nil {
 		return err
 	}
@@ -344,7 +344,7 @@ func (s *Shell) executePipeline(line string) error {
 		cmd = s.expandVars(cmd)
 
 		var err error
-		result, err = s.executeModule(cmd, args)
+		result, err = s.executeModule(strings.Split(cmd, " "), args)
 		if err != nil {
 			return err
 		}
@@ -430,7 +430,7 @@ func (s *Shell) executePipeline(line string) error {
 			}
 
 			// Execute next module
-			modResult, err := s.executeModule(op, callArgs)
+			modResult, err := s.executeModule(trex_utils.ParseCommand(pipe), callArgs)
 			if err != nil {
 				return err
 			}
@@ -468,16 +468,18 @@ func (s *Shell) expandVars(input string) string {
 }
 
 // executeModule executes a Python module
-func (s *Shell) executeModule(cmd string, args []string) (map[string]interface{}, error) {
+func (s *Shell) executeModule(cmdA []string, args []string) (map[string]interface{}, error) {
+	cmd := cmdA[0]
+
 	modulePath, err := s.loader.FindModule(cmd)
 	if err != nil {
-		s.printModuleNotFound(cmd)
+		s.printModuleNotFound(cmdA)
 		return nil, os.ErrNotExist
 	}
 
 	result, err := s.executor.Execute(cmd, args)
 	if err != nil {
-		s.printExecutionError(cmd, modulePath, err)
+		s.printExecutionError(cmdA, modulePath, err)
 		return nil, err
 	}
 
@@ -687,31 +689,40 @@ func printRustStyleError(
 	// ────────────────────────────────────────────────
 	// Header
 	// ────────────────────────────────────────────────
-	fmt.Fprintf(os.Stderr, "\n%s%s%s %s%s\n",
-		bold, levelColor, level, reset, bold+title+reset)
 
 	// Location (with nicer spacing)
+	header := fmt.Sprintf("<%s%s%s%s> %s",
+		bold, levelColor, level, reset, bold+title+reset)
+
 	if location != "" {
-		fmt.Fprintf(os.Stderr, " %s-->%s %s\n", cyan, reset, location)
+		fmt.Fprintf(os.Stderr, " %s-->%s %s %s\n", cyan, reset, location, header)
+	} else {
+		location = "entry:repl"
+		fmt.Fprintf(os.Stderr, "%s--->%s %s %s\n", cyan, reset, location, header)
 	}
 
 	// Separator line
-	fmt.Fprintf(os.Stderr, " %s│%s\n", cyan, reset)
+	//fmt.Fprintf(os.Stderr, " %s│%s\n", cyan, reset)
 
 	// Code context + underline
 	if codeContext != "" {
 		// Show the source line
-		fmt.Fprintf(os.Stderr, " %s│%s %s\n", cyan, reset, codeContext)
+		fmt.Fprintf(os.Stderr, " %s│%s\n", cyan, reset)
+		if location == "entry:repl" {
+			fmt.Fprintf(os.Stderr, "%s0│%s %s\n", cyan, reset, codeContext)
+		} else {
+			fmt.Fprintf(os.Stderr, " %s│%s %s\n", cyan, reset, codeContext)
+		}
 
 		// Underline (only if meaningful)
 		if underlineLen > 0 && underlineStart >= 0 {
-			spaces := strings.Repeat(" ", underlineStart)
+			spaces := strings.Repeat("", underlineStart)
 			underline := strings.Repeat("^", underlineLen) // ^ is more common in modern rustc
-			fmt.Fprintf(os.Stderr, " %s│%s  %s%s%s %s\n",
+			fmt.Fprintf(os.Stderr, " %s│%s %s%s%s %s\n",
 				cyan, reset,
 				spaces,
 				red+bold+underline+reset,
-				" "+message,
+				" "+message, reset,
 			)
 		} else {
 			// No underline → message right below line
@@ -738,25 +749,26 @@ func printRustStyleError(
 }
 
 // printModuleNotFound – wrapper for module-not-found case
-func (s *Shell) printModuleNotFound(cmd string) {
+func (s *Shell) printModuleNotFound(cmd []string) {
 	// You can improve this later by reading context from s.currentScript etc.
 	// For now — keeping it simple as per original signature limitation
 
 	printRustStyleError(
-		"ERROR",
+		"err_module_not_found",
 		"module not found",
-		"", // location
-		"", // code context
-		0, 0,
-		fmt.Sprintf("cannot find module %s'%s'%s", bold, cmd, reset),
-		fmt.Sprintf("expected to find %s.py / %s.json / %s.yaml (or similar) in the modules directory", cmd, cmd, cmd),
+		"entry#repl",           // location
+		strings.Join(cmd, " "), // code context
+		0, len(cmd[0]),
+		fmt.Sprintf("cannot find module %s'%s' %s", bold, cmd[0], reset),
+		fmt.Sprintf("expected to find %s.py / %s.json / %s.yaml (or similar) in the modules directory", cmd[0], cmd[0], cmd[0]),
 		fmt.Sprintf("current search path: %s", s.moduleDir),
 		fmt.Sprintf("run %sls -la %s%s to see available modules", bold, s.moduleDir, reset),
 	)
+	//println(len(strings.Split(cmd, " ")[0]))
 }
 
 // printExecutionError – wrapper for module runtime / output errors
-func (s *Shell) printExecutionError(cmd string, modulePath string, err error) {
+func (s *Shell) printExecutionError(cmd []string, modulePath string, err error) {
 	// Try to make module path relative (from ~/.t-rex/modules)
 	relPath := modulePath
 	if home, _ := os.UserHomeDir(); home != "" {
@@ -772,7 +784,7 @@ func (s *Shell) printExecutionError(cmd string, modulePath string, err error) {
 		relPath, // using module file as "location" for now
 		"",      // no source line context (would need shell state)
 		0, 0,
-		fmt.Sprintf("%s: %v", cmd, err),
+		fmt.Sprintf("%s: %v", cmd[0], err),
 		"module must print **valid JSON** to stdout and nothing else",
 		fmt.Sprintf("no stray prints, debug output, tracebacks, or syntax errors allowed"),
 		fmt.Sprintf("full path: %s", modulePath),
