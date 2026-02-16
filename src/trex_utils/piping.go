@@ -274,7 +274,7 @@ func formatMapAsVerticalTable(m map[string]interface{}) string {
 // formatTable formats array of objects as horizontal table
 func formatTable(arr []interface{}) string {
 	if len(arr) == 0 {
-		return "(empty)\n"
+		return "(empty) \n"
 	}
 
 	var items []map[string]interface{}
