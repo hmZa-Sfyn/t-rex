@@ -886,7 +886,8 @@ func loadConfig(s *Shell) {
 	if err != nil {
 		// Create default config if doesn't exist
 		createDefaultConfig(configPath)
-		return
+		data, _ = os.ReadFile(configPath)
+
 	}
 
 	lines := strings.Split(string(data), "\n")
