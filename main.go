@@ -81,9 +81,8 @@ func main() {
 
 // showVersion displays version information
 func showVersion() {
-	fmt.Printf("T-Rex Shell v%s\n", Version)
-	fmt.Println("A JSON-based command execution shell")
-	fmt.Println("https://github.com/yourusername/t-rex")
+	trex_utils.PrintBanner()
+	os.Exit(0)
 }
 
 // Shell represents the T-Rex shell
