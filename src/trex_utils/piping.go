@@ -165,7 +165,7 @@ func ExecutePipeline(data map[string]interface{}, pipeline *Pipeline) (map[strin
 							selected[field] = val
 						} else {
 							// Optional: log missing field
-							// fmt.Fprintf(os.Stderr, "warning: field %q not found\n", field)
+							//fmt.Fprintf(os.Stderr, "warning: field %q not found\n", field)
 						}
 					}
 					current["output"] = selected
@@ -342,9 +342,11 @@ func formatTable(arr []interface{}) string {
 	for _, item := range items {
 		result.WriteString("│")
 		for _, col := range columns {
+
 			val := fmt.Sprintf("%v", item[col])
 			result.WriteString(" " + padRight(val, columnWidths[col]) + " ")
 			result.WriteString("│")
+
 		}
 		result.WriteString("\n")
 	}
