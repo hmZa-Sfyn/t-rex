@@ -3,7 +3,7 @@
 import os
 
 
-TOTAL_COMMITS = 2
+TOTAL_COMMITS = 999
 COMMIT_MATTER = ""
 
 for x in range(0,TOTAL_COMMITS):
