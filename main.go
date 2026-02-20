@@ -20,9 +20,11 @@ const Version = "1.0.0"
 func main() {
 	// Define command-line flags
 	pathFlag := flag.String("path", "", "Path to custom modules directory")
-	bannerFlag := flag.Bool("banner", false, "Show banner and exit")
+	bannerFlag := flag.Bool("banner", false, "Show banner and exit (default: false)")
 	execFlag := flag.String("exec", "", "Execute a command and exit")
-	versionFlag := flag.Bool("version", false, "Show version information")
+	versionFlag := flag.Bool("version", false, "Show version information (default: false)")
+
+	verbose_flag := flag.Bool("vv", false, "Verbse to show logs and descripeted error messages (default: false)")
 
 	flag.Parse()
 
@@ -41,13 +43,20 @@ func main() {
 		os.Exit(0)
 	}
 
+	vv := false
+
+	// Handle banner flag
+	if *verbose_flag {
+		vv = true
+	}
+
 	shell := NewShell()
 
 	// If a file path was passed as positional arg, execute file and exit
 	if len(args) > 0 {
 		candidate := args[0]
 		if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() {
-			shell.ExecuteFile(candidate)
+			shell.ExecuteFile(candidate, vv)
 			os.Exit(0)
 		}
 	}
@@ -62,19 +71,18 @@ func main() {
 
 	// Handle exec flag - execute command and exit
 	if *execFlag != "" {
-		shell.ExecuteOnce(*execFlag)
+		shell.ExecuteOnce(*execFlag, vv)
 		os.Exit(0)
 	}
 
 	// Otherwise run interactive shell
-	shell.Run()
+	shell.Run(vv)
 }
 
 // showVersion displays version information
 func showVersion() {
-	fmt.Printf("T-Rex Shell v%s\n", Version)
-	fmt.Println("A JSON-based command execution shell")
-	fmt.Println("https://github.com/yourusername/t-rex")
+	trex_utils.PrintBanner()
+	os.Exit(0)
 }
 
 // Shell represents the T-Rex shell
@@ -124,20 +132,20 @@ func (s *Shell) SetModulePath(path string) error {
 }
 
 // ExecuteOnce executes a single command and returns
-func (s *Shell) ExecuteOnce(line string) {
+func (s *Shell) ExecuteOnce(line string, verbose bool) {
 	line = strings.TrimSpace(line)
 	if line == "" {
 		return
 	}
 
-	if err := s.executeCommand(line); err != nil {
+	if err := s.executeCommand(line, verbose); err != nil {
 		// print brief error (detailed logging handled elsewhere)
 		trex_utils.PrintError(err.Error())
 	}
 }
 
 // Run starts the interactive shell
-func (s *Shell) Run() {
+func (s *Shell) Run(verbose bool) {
 	trex_utils.PrintBanner()
 	fmt.Println()
 
@@ -165,7 +173,7 @@ func (s *Shell) Run() {
 		}
 
 		s.history.Add(line)
-		if err := s.executeCommand(line); err != nil {
+		if err := s.executeCommand(line, verbose); err != nil {
 			// error already logged/printed by lower-level handlers
 			trex_utils.PrintError(err.Error())
 		}
@@ -173,10 +181,10 @@ func (s *Shell) Run() {
 }
 
 // executeCommand processes a command
-func (s *Shell) executeCommand(line string) error {
+func (s *Shell) executeCommand(line string, verbose bool) error {
 	// If the line is a file path, execute file
 	if fi, err := os.Stat(line); err == nil && !fi.IsDir() {
-		s.ExecuteFile(line)
+		s.ExecuteFile(line, verbose)
 		return nil
 	}
 
@@ -227,7 +235,7 @@ func (s *Shell) executeCommand(line string) error {
 	}
 
 	// Check for forloop pattern: forloop RANGE as $var do { ... }
-	handled, err := s.handleForLoop(line)
+	handled, err := s.handleForLoop(line, verbose)
 	if err != nil {
 		return err
 	}
@@ -236,7 +244,7 @@ func (s *Shell) executeCommand(line string) error {
 	}
 
 	// Check foreach
-	fhandled, ferr := s.handleForeach(line)
+	fhandled, ferr := s.handleForeach(line, verbose)
 	if ferr != nil {
 		return ferr
 	}
@@ -264,7 +272,7 @@ func (s *Shell) executeCommand(line string) error {
 
 	// Try to execute as Python module
 	var result map[string]interface{}
-	result, err = s.executeModule(cmd, args)
+	result, err = s.executeModule(strings.Split(cmd, " "), args)
 	if err != nil {
 		return err
 	}
@@ -344,7 +352,7 @@ func (s *Shell) executePipeline(line string) error {
 		cmd = s.expandVars(cmd)
 
 		var err error
-		result, err = s.executeModule(cmd, args)
+		result, err = s.executeModule(strings.Split(cmd, " "), args)
 		if err != nil {
 			return err
 		}
@@ -430,7 +438,7 @@ func (s *Shell) executePipeline(line string) error {
 			}
 
 			// Execute next module
-			modResult, err := s.executeModule(op, callArgs)
+			modResult, err := s.executeModule(trex_utils.ParseCommand(pipe), callArgs)
 			if err != nil {
 				return err
 			}
@@ -468,16 +476,18 @@ func (s *Shell) expandVars(input string) string {
 }
 
 // executeModule executes a Python module
-func (s *Shell) executeModule(cmd string, args []string) (map[string]interface{}, error) {
+func (s *Shell) executeModule(cmdA []string, args []string) (map[string]interface{}, error) {
+	cmd := cmdA[0]
+
 	modulePath, err := s.loader.FindModule(cmd)
 	if err != nil {
-		s.printModuleNotFound(cmd)
+		s.printModuleNotFound(cmdA)
 		return nil, os.ErrNotExist
 	}
 
 	result, err := s.executor.Execute(cmd, args)
 	if err != nil {
-		s.printExecutionError(cmd, modulePath, err)
+		s.printExecutionError(cmdA, modulePath, err)
 		return nil, err
 	}
 
@@ -485,7 +495,7 @@ func (s *Shell) executeModule(cmd string, args []string) (map[string]interface{}
 }
 
 // ExecuteFile executes commands from a script file (one command per line)
-func (s *Shell) ExecuteFile(path string) {
+func (s *Shell) ExecuteFile(path string, verbose bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		trex_utils.PrintError("Failed to read script: " + err.Error())
@@ -493,16 +503,22 @@ func (s *Shell) ExecuteFile(path string) {
 	}
 
 	lines := strings.Split(string(data), "\n")
-	fmt.Printf("Running script: %s\n", path)
+
+	if verbose == true {
+		fmt.Printf("Running script: %s\n", path)
+	}
+
 	for idx, raw := range lines {
 		line := strings.TrimSpace(raw)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
 		// Prefix with line number for easier debugging
-		fmt.Printf("[%d] $ %s\n", idx+1, line)
+		if verbose == true {
+			fmt.Printf(" %d $ %s\n", idx+1, line)
+		}
 		s.history.Add(line)
-		if err := s.executeCommand(line); err != nil {
+		if err := s.executeCommand(line, verbose); err != nil {
 			// Write enhanced error info including file and line number
 			if home, herr := os.UserHomeDir(); herr == nil {
 				trexDir := filepath.Join(home, ".t-rex")
@@ -526,7 +542,7 @@ func (s *Shell) ExecuteFile(path string) {
 
 // handleForLoop matches and executes constructs like:
 // forloop 0..5 as $x do { echo "192.168.0.$x" }
-func (s *Shell) handleForLoop(line string) (bool, error) {
+func (s *Shell) handleForLoop(line string, verbose bool) (bool, error) {
 	re := regexp.MustCompile(`(?s)^\s*forloop\s+([^\s]+)\s+as\s+\$([A-Za-z_][A-Za-z0-9_]*)\s+do\s*\{(.*)\}\s*$`)
 	m := re.FindStringSubmatch(line)
 	if m == nil {
@@ -581,7 +597,7 @@ func (s *Shell) handleForLoop(line string) (bool, error) {
 		s.vars[varName] = val
 		for _, cmd := range cmds {
 			expanded := s.expandVars(cmd)
-			if err := s.executeCommand(expanded); err != nil {
+			if err := s.executeCommand(expanded, verbose); err != nil {
 				return true, err
 			}
 		}
@@ -593,7 +609,7 @@ func (s *Shell) handleForLoop(line string) (bool, error) {
 
 // handleForeach handles constructs like:
 // foreach "sha256"|"sha512" as $x do { echo $x }
-func (s *Shell) handleForeach(line string) (bool, error) {
+func (s *Shell) handleForeach(line string, verbose bool) (bool, error) {
 	re := regexp.MustCompile(`(?s)^\s*foreach\s+(.+?)\s+as\s+\$([A-Za-z_][A-Za-z0-9_]*)\s+do\s*\{(.*)\}\s*$`)
 	m := re.FindStringSubmatch(line)
 	if m == nil {
@@ -637,7 +653,7 @@ func (s *Shell) handleForeach(line string) (bool, error) {
 		s.vars[varName] = it
 		for _, cmd := range cmds {
 			expanded := s.expandVars(cmd)
-			if err := s.executeCommand(expanded); err != nil {
+			if err := s.executeCommand(expanded, verbose); err != nil {
 				return true, err
 			}
 		}
@@ -687,31 +703,40 @@ func printRustStyleError(
 	// ────────────────────────────────────────────────
 	// Header
 	// ────────────────────────────────────────────────
-	fmt.Fprintf(os.Stderr, "\n%s%s%s %s%s\n",
-		bold, levelColor, level, reset, bold+title+reset)
 
 	// Location (with nicer spacing)
+	header := fmt.Sprintf("<%s%s%s%s> %s",
+		bold, levelColor, level, reset, bold+title+reset)
+
 	if location != "" {
-		fmt.Fprintf(os.Stderr, " %s-->%s %s\n", cyan, reset, location)
+		fmt.Fprintf(os.Stderr, " %s-->%s %s %s\n", cyan, reset, location, header)
+	} else {
+		location = "entry:repl"
+		fmt.Fprintf(os.Stderr, "%s--->%s %s %s\n", cyan, reset, location, header)
 	}
 
 	// Separator line
-	fmt.Fprintf(os.Stderr, " %s│%s\n", cyan, reset)
+	//fmt.Fprintf(os.Stderr, " %s│%s\n", cyan, reset)
 
 	// Code context + underline
 	if codeContext != "" {
 		// Show the source line
-		fmt.Fprintf(os.Stderr, " %s│%s %s\n", cyan, reset, codeContext)
+		fmt.Fprintf(os.Stderr, " %s│%s\n", cyan, reset)
+		if location == "entry:repl" {
+			fmt.Fprintf(os.Stderr, "%s0│%s %s\n", cyan, reset, codeContext)
+		} else {
+			fmt.Fprintf(os.Stderr, " %s│%s %s\n", cyan, reset, codeContext)
+		}
 
 		// Underline (only if meaningful)
 		if underlineLen > 0 && underlineStart >= 0 {
-			spaces := strings.Repeat(" ", underlineStart)
+			spaces := strings.Repeat("", underlineStart)
 			underline := strings.Repeat("^", underlineLen) // ^ is more common in modern rustc
-			fmt.Fprintf(os.Stderr, " %s│%s  %s%s%s %s\n",
+			fmt.Fprintf(os.Stderr, " %s│%s %s%s%s %s\n",
 				cyan, reset,
 				spaces,
 				red+bold+underline+reset,
-				" "+message,
+				" "+message, reset,
 			)
 		} else {
 			// No underline → message right below line
@@ -738,25 +763,26 @@ func printRustStyleError(
 }
 
 // printModuleNotFound – wrapper for module-not-found case
-func (s *Shell) printModuleNotFound(cmd string) {
+func (s *Shell) printModuleNotFound(cmd []string) {
 	// You can improve this later by reading context from s.currentScript etc.
 	// For now — keeping it simple as per original signature limitation
 
 	printRustStyleError(
-		"ERROR",
+		"err_module_not_found",
 		"module not found",
-		"", // location
-		"", // code context
-		0, 0,
-		fmt.Sprintf("cannot find module %s'%s'%s", bold, cmd, reset),
-		fmt.Sprintf("expected to find %s.py / %s.json / %s.yaml (or similar) in the modules directory", cmd, cmd, cmd),
+		"entry#repl",           // location
+		strings.Join(cmd, " "), // code context
+		0, len(cmd[0]),
+		fmt.Sprintf("cannot find module %s'%s' %s", bold, cmd[0], reset),
+		fmt.Sprintf("expected to find %s.py / %s.json / %s.yaml (or similar) in the modules directory", cmd[0], cmd[0], cmd[0]),
 		fmt.Sprintf("current search path: %s", s.moduleDir),
 		fmt.Sprintf("run %sls -la %s%s to see available modules", bold, s.moduleDir, reset),
 	)
+	//println(len(strings.Split(cmd, " ")[0]))
 }
 
 // printExecutionError – wrapper for module runtime / output errors
-func (s *Shell) printExecutionError(cmd string, modulePath string, err error) {
+func (s *Shell) printExecutionError(cmd []string, modulePath string, err error) {
 	// Try to make module path relative (from ~/.t-rex/modules)
 	relPath := modulePath
 	if home, _ := os.UserHomeDir(); home != "" {
@@ -772,7 +798,7 @@ func (s *Shell) printExecutionError(cmd string, modulePath string, err error) {
 		relPath, // using module file as "location" for now
 		"",      // no source line context (would need shell state)
 		0, 0,
-		fmt.Sprintf("%s: %v", cmd, err),
+		fmt.Sprintf("%s: %v", cmd[0], err),
 		"module must print **valid JSON** to stdout and nothing else",
 		fmt.Sprintf("no stray prints, debug output, tracebacks, or syntax errors allowed"),
 		fmt.Sprintf("full path: %s", modulePath),
@@ -859,7 +885,8 @@ func loadConfig(s *Shell) {
 	if err != nil {
 		// Create default config if doesn't exist
 		createDefaultConfig(configPath)
-		return
+		data, _ = os.ReadFile(configPath)
+
 	}
 
 	lines := strings.Split(string(data), "\n")
@@ -883,7 +910,10 @@ func loadConfig(s *Shell) {
 			if key == "prompt_template" {
 				s.promptTemplate = val
 			}
+		} else {
+			s.executeCommand(line, false)
 		}
+		//fmt.Println(line)
 	}
 }
 
@@ -903,6 +933,7 @@ history_size=1000
 # %d = full working directory (same as %w)
 # %D = working directory basename only
 # %~ = home directory relative path
+
 prompt_symbol=❯
 prompt_template=❯
 prompt_color=cyan

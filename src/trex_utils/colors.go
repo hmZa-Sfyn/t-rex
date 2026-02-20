@@ -33,18 +33,18 @@ func ColoredText(text string, color Color) string {
 func PrintBanner() {
 	banner := `
   dP                                       
-  88                                       
-d8888P          88d888b. .d8888b. dP.  .dP 
-  88   88888888 88'  '88 88ooood8  '8bd8'  
-  88            88       88.  ...  .d88b.  
-  dP            dP       '88888P' dP'  'dP
+  88                                         @----------------------------------------@
+d8888P          88d888b. .d8888b. dP.  .dP   | A basic easy-to-mod repl interface++!  |
+  88   88888888 88'  '88 88ooood8  '8bd8'    | Core made in GO, PYTHON3 based modules |
+  88            88       88.  ...  .d88b.    | Pretty-Errors - Json-Parsing - Piping  |
+  dP            dP       '88888P' dP'  'dP   @----------------------------------------@
 
 ⠀⠀⠀⠀⠀⣾⣽⣿⣿⡇⠀⠀ (repo: https://github.com/hmZa-Sfyn/t-rex)
-⢀⠀⠀⠀⢀⣿⣿⠯⠍⠁⠀⠀⠀(author: https://github.com/hmZa-Sfyn)⠀
+⢀⠀⠀⠀⢀⣿⣿⠯⠍⠁⠀⠀⠀(author: https://github.com/hmZa-Sfyn)
 ⢸⣦⣤⣾⣿⣿⣿⠓⠀⠀⠀⠀ (version: beta-whatever)
-⠀⠙⢿⣿⣿⡿⠃⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠸⠏⠈⠇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
-`
+⠀⠙⢿⣿⣿⡿⠃⠀⠀⠀
+  ⠸⠏⠈⠇⠀
+  `
 	fmt.Println(ColoredText(banner, Cyan))
 }
 
