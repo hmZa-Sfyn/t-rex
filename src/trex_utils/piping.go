@@ -26,16 +26,87 @@ func HasPipe(line string) bool {
 	return strings.Contains(line, "|")
 }
 
-// SelectFields filters JSON data to specified fields
+// SelectFields filters JSON data to specified fields.
+// Supports nested access with "::" separator, e.g. "data::user::name"
+// and aliasing with "as", e.g. "data::user::name as username"
 func SelectFields(data map[string]interface{}, fields []string) map[string]interface{} {
 	result := make(map[string]interface{})
 	for _, field := range fields {
 		field = strings.TrimSpace(field)
-		if val, exists := data[field]; exists {
-			result[field] = val
+
+		// Support aliasing: "data::user::name as username"
+		alias := ""
+		if idx := indexOfWord(field, "as"); idx >= 0 {
+			alias = strings.TrimSpace(field[idx+3:])
+			field = strings.TrimSpace(field[:idx])
+		}
+
+		if strings.Contains(field, "::") {
+			// Nested field path
+			val, ok := getNestedField(data, strings.Split(field, "::"))
+			if ok {
+				key := alias
+				if key == "" {
+					// Use last segment as key by default
+					parts := strings.Split(field, "::")
+					key = parts[len(parts)-1]
+				}
+				result[key] = val
+			}
+		} else {
+			if val, exists := data[field]; exists {
+				key := alias
+				if key == "" {
+					key = field
+				}
+				result[key] = val
+			}
 		}
 	}
 	return result
+}
+
+// getNestedField traverses a map using a path of keys
+func getNestedField(data interface{}, path []string) (interface{}, bool) {
+	if len(path) == 0 {
+		return data, true
+	}
+
+	key := strings.TrimSpace(path[0])
+
+	switch v := data.(type) {
+	case map[string]interface{}:
+		val, exists := v[key]
+		if !exists {
+			return nil, false
+		}
+		return getNestedField(val, path[1:])
+	case []interface{}:
+		// Allow numeric index like "0", "1", etc.
+		var idx int
+		if _, err := fmt.Sscanf(key, "%d", &idx); err == nil {
+			if idx >= 0 && idx < len(v) {
+				return getNestedField(v[idx], path[1:])
+			}
+		}
+		return nil, false
+	default:
+		if len(path) == 0 {
+			return v, true
+		}
+		return nil, false
+	}
+}
+
+// indexOfWord finds the byte index of a whole word in s, or -1 if not found.
+func indexOfWord(s, word string) int {
+	lower := strings.ToLower(s)
+	target := " " + word + " "
+	idx := strings.Index(lower, target)
+	if idx >= 0 {
+		return idx
+	}
+	return -1
 }
 
 // FilterArray filters an array of objects to specified fields
@@ -67,7 +138,9 @@ func formatMap(m map[string]interface{}, indent int) string {
 	var result strings.Builder
 	prefix := strings.Repeat("  ", indent)
 
-	for key, val := range m {
+	keys := sortedKeys(m)
+	for _, key := range keys {
+		val := m[key]
 		result.WriteString(prefix)
 		result.WriteString(ColoredText(key, Cyan) + ": ")
 
@@ -144,35 +217,46 @@ func ExecutePipeline(data map[string]interface{}, pipeline *Pipeline) (map[strin
 
 		switch op {
 		case "select":
-			if obj, ok := current["output"].(map[string]interface{}); ok {
-				// Join all remaining tokens and split properly by comma
-				fullArg := strings.TrimSpace(strings.Join(args, " "))
-				if fullArg == "" || fullArg == "*" {
-					// select * → keep everything
-					break
-				}
-				var fields []string
-				for _, f := range strings.Split(fullArg, ",") {
-					trimmed := strings.TrimSpace(f)
-					if trimmed != "" {
-						fields = append(fields, trimmed)
-					}
-				}
-				if len(fields) > 0 {
-					selected := make(map[string]interface{})
-					for _, field := range fields {
-						if val, exists := obj[field]; exists {
-							selected[field] = val
-						} else {
-							// Optional: log missing field
-							//fmt.Fprintf(os.Stderr, "warning: field %q not found\n", field)
-						}
-					}
-					current["output"] = selected
-				}
+			// Join all remaining tokens and split by comma
+			fullArg := strings.TrimSpace(strings.Join(args, " "))
+			if fullArg == "" || fullArg == "*" {
+				break // select * → keep everything
 			}
+
+			fields := SplitCommaFields(fullArg)
+			if len(fields) == 0 {
+				break
+			}
+
+			// Determine the source — could be root, or "output" wrapper
+			var source interface{}
+			if out, ok := current["output"]; ok {
+				source = out
+			} else {
+				source = current
+			}
+
+			switch src := source.(type) {
+			case map[string]interface{}:
+				current["output"] = SelectFields(src, fields)
+
+			case []interface{}:
+				// Apply select to every element of the array
+				var selected []interface{}
+				for _, item := range src {
+					if obj, ok := item.(map[string]interface{}); ok {
+						selected = append(selected, SelectFields(obj, fields))
+					}
+				}
+				current["output"] = selected
+
+			default:
+				// Scalar or unknown — nothing to select from
+			}
+
 		case "pp":
 			current["__pretty_print"] = true
+
 		case "tt":
 			current["__table_print"] = true
 		}
@@ -181,7 +265,8 @@ func ExecutePipeline(data map[string]interface{}, pipeline *Pipeline) (map[strin
 	return current, nil
 }
 
-// SplitCommaFields splits comma-separated list and trims each item
+// SplitCommaFields splits a comma-separated list and trims each item.
+// Respects "as" aliases that may contain spaces, e.g. "data::user::name as uname"
 func SplitCommaFields(s string) []string {
 	var result []string
 	for _, f := range strings.Split(s, ",") {
@@ -193,14 +278,20 @@ func SplitCommaFields(s string) []string {
 	return result
 }
 
-// TablePrint formats data as a pretty table — vertical for single object, horizontal for array
+// ─────────────────────────────────────────────
+// Table printing
+// ─────────────────────────────────────────────
+
+const maxColWidth = 48 // max display width for any single column value
+
+// TablePrint formats data as a pretty table.
+// Single object → vertical key/value table.
+// Array of objects → horizontal table.
 func TablePrint(data interface{}) string {
 	switch v := data.(type) {
 	case map[string]interface{}:
-		// Single object → vertical table (one row per key-value)
 		return formatMapAsVerticalTable(v)
 	case []interface{}:
-		// Array of objects → classic horizontal table
 		return formatTable(v)
 	default:
 		return PrettyPrint(data)
@@ -213,68 +304,54 @@ func formatMapAsVerticalTable(m map[string]interface{}) string {
 		return "(empty)\n"
 	}
 
-	var result strings.Builder
-	var keys []string
-	maxKeyLen := 0
+	keys := sortedKeys(m)
 
-	// Collect and sort keys for consistent order
-	for key := range m {
-		keys = append(keys, key)
+	maxKeyLen := 5 // minimum "Field" header width
+	for _, key := range keys {
 		if len(key) > maxKeyLen {
 			maxKeyLen = len(key)
 		}
 	}
-	sort.Strings(keys)
 
-	// Top border
-	result.WriteString("┌")
-	result.WriteString(strings.Repeat("─", maxKeyLen+2))
-	result.WriteString("┬")
-	result.WriteString(strings.Repeat("─", 42))
-	result.WriteString("┐\n")
+	valWidth := 40 // fixed value column width
 
-	// Header
-	result.WriteString("│ ")
-	result.WriteString(padRight("Field", maxKeyLen))
-	result.WriteString(" │ ")
-	result.WriteString(padRight("Value", 40))
-	result.WriteString(" │\n")
+	var result strings.Builder
 
-	// Separator
-	result.WriteString("├")
-	result.WriteString(strings.Repeat("─", maxKeyLen+2))
-	result.WriteString("┼")
-	result.WriteString(strings.Repeat("─", 42))
-	result.WriteString("┤\n")
-
-	// One row per field
-	for _, key := range keys {
-		valStr := fmt.Sprintf("%v", m[key])
-		if len(valStr) > 40 {
-			valStr = valStr[:37] + "..."
-		}
-
-		result.WriteString("│ ")
-		result.WriteString(padRight(key, maxKeyLen))
-		result.WriteString(" │ ")
-		result.WriteString(padRight(valStr, 40))
-		result.WriteString(" │\n")
+	writeBorder := func(left, mid, right, horiz string) {
+		result.WriteString(left)
+		result.WriteString(strings.Repeat(horiz, maxKeyLen+2))
+		result.WriteString(mid)
+		result.WriteString(strings.Repeat(horiz, valWidth+2))
+		result.WriteString(right + "\n")
 	}
 
-	// Bottom border
-	result.WriteString("└")
-	result.WriteString(strings.Repeat("─", maxKeyLen+2))
-	result.WriteString("┴")
-	result.WriteString(strings.Repeat("─", 42))
-	result.WriteString("┘\n")
+	writeBorder("┌", "┬", "┐", "─")
 
+	// Header
+	result.WriteString("│ " + padRight("Field", maxKeyLen) + " │ " + padRight("Value", valWidth) + " │\n")
+	writeBorder("├", "┼", "┤", "─")
+
+	for _, key := range keys {
+		valStr := flattenValue(m[key])
+		// Wrap long values across multiple lines
+		lines := wrapString(valStr, valWidth)
+		for li, line := range lines {
+			if li == 0 {
+				result.WriteString("│ " + padRight(key, maxKeyLen) + " │ " + padRight(line, valWidth) + " │\n")
+			} else {
+				result.WriteString("│ " + padRight("", maxKeyLen) + " │ " + padRight(line, valWidth) + " │\n")
+			}
+		}
+	}
+
+	writeBorder("└", "┴", "┘", "─")
 	return result.String()
 }
 
-// formatTable formats array of objects as horizontal table
+// formatTable formats an array of objects as a horizontal table
 func formatTable(arr []interface{}) string {
 	if len(arr) == 0 {
-		return "(empty) \n"
+		return "(empty)\n"
 	}
 
 	var items []map[string]interface{}
@@ -288,9 +365,9 @@ func formatTable(arr []interface{}) string {
 				if !contains(columns, key) {
 					columns = append(columns, key)
 				}
-				width := len(fmt.Sprintf("%v", obj[key]))
-				if width > columnWidths[key] {
-					columnWidths[key] = width
+				w := len(flattenValue(obj[key]))
+				if w > columnWidths[key] {
+					columnWidths[key] = w
 				}
 			}
 		}
@@ -302,98 +379,137 @@ func formatTable(arr []interface{}) string {
 
 	sort.Strings(columns)
 
+	// Clamp each column and ensure header fits
 	for _, col := range columns {
-		if columnWidths[col] < len(col) {
-			columnWidths[col] = len(col)
+		w := columnWidths[col]
+		if w > maxColWidth {
+			w = maxColWidth
 		}
+		if len(col) > w {
+			w = len(col)
+		}
+		columnWidths[col] = w
 	}
 
 	var result strings.Builder
 
-	// Top border
-	result.WriteString("┌")
-	for i, col := range columns {
-		result.WriteString(strings.Repeat("─", columnWidths[col]+2))
-		if i < len(columns)-1 {
-			result.WriteString("┬")
+	writeBorderRow := func(left, mid, right, horiz string) {
+		result.WriteString(left)
+		for i, col := range columns {
+			result.WriteString(strings.Repeat(horiz, columnWidths[col]+2))
+			if i < len(columns)-1 {
+				result.WriteString(mid)
+			}
 		}
+		result.WriteString(right + "\n")
 	}
-	result.WriteString("┐\n")
 
-	// Header
+	writeBorderRow("┌", "┬", "┐", "─")
+
+	// Header row
 	result.WriteString("│")
 	for _, col := range columns {
-		result.WriteString(" " + padRight(col, columnWidths[col]) + " ")
-		result.WriteString("│")
+		result.WriteString(" " + padRight(col, columnWidths[col]) + " │")
 	}
 	result.WriteString("\n")
 
-	// Separator
-	result.WriteString("├")
-	for i, col := range columns {
-		result.WriteString(strings.Repeat("─", columnWidths[col]+2))
-		if i < len(columns)-1 {
-			result.WriteString("┼")
-		}
-	}
-	result.WriteString("┤\n")
+	writeBorderRow("├", "┼", "┤", "─")
 
 	// Data rows
 	for _, item := range items {
-		result.WriteString("│")
+		// Collect wrapped lines per column
+		colLines := make(map[string][]string)
+		maxLines := 1
 		for _, col := range columns {
+			lines := wrapString(flattenValue(item[col]), columnWidths[col])
+			colLines[col] = lines
+			if len(lines) > maxLines {
+				maxLines = len(lines)
+			}
+		}
 
-			val := fmt.Sprintf("%v", item[col])
-			result.WriteString(" " + padRight(val, columnWidths[col]) + " ")
+		for li := 0; li < maxLines; li++ {
 			result.WriteString("│")
-
-		}
-		result.WriteString("\n")
-	}
-
-	// Bottom border
-	result.WriteString("└")
-	for i, col := range columns {
-		result.WriteString(strings.Repeat("─", columnWidths[col]+2))
-		if i < len(columns)-1 {
-			result.WriteString("┴")
+			for _, col := range columns {
+				lines := colLines[col]
+				cell := ""
+				if li < len(lines) {
+					cell = lines[li]
+				}
+				result.WriteString(" " + padRight(cell, columnWidths[col]) + " │")
+			}
+			result.WriteString("\n")
 		}
 	}
-	result.WriteString("┘\n")
 
+	writeBorderRow("└", "┴", "┘", "─")
 	return result.String()
 }
 
-func formatMapAsTable(m map[string]interface{}) string {
-	var result strings.Builder
+// ─────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────
 
-	maxKeyLen := 0
-	for key := range m {
-		if len(key) > maxKeyLen {
-			maxKeyLen = len(key)
+// flattenValue converts any value to a display string, truncating nested objects
+func flattenValue(v interface{}) string {
+	switch val := v.(type) {
+	case nil:
+		return "null"
+	case string:
+		return val
+	case float64:
+		return fmt.Sprintf("%g", val)
+	case bool:
+		return fmt.Sprintf("%v", val)
+	case map[string]interface{}:
+		// Inline compact JSON-like representation
+		parts := make([]string, 0, len(val))
+		for k, vv := range val {
+			parts = append(parts, fmt.Sprintf("%s:%v", k, vv))
 		}
-	}
-
-	result.WriteString("┌" + strings.Repeat("─", maxKeyLen+2) + "┬" + strings.Repeat("─", 40) + "┐\n")
-
-	for key, val := range m {
-		valStr := fmt.Sprintf("%v", val)
-		if len(valStr) > 38 {
-			valStr = valStr[:35] + "..."
+		sort.Strings(parts)
+		return "{" + strings.Join(parts, ", ") + "}"
+	case []interface{}:
+		strs := make([]string, 0, len(val))
+		for _, item := range val {
+			strs = append(strs, flattenValue(item))
 		}
-		result.WriteString("│ " + padRight(key, maxKeyLen) + " │ " + padRight(valStr, 38) + " │\n")
+		return "[" + strings.Join(strs, ", ") + "]"
+	default:
+		return fmt.Sprintf("%v", val)
 	}
+}
 
-	result.WriteString("└" + strings.Repeat("─", maxKeyLen+2) + "┴" + strings.Repeat("─", 40) + "┘\n")
+// wrapString splits s into lines of at most width runes
+func wrapString(s string, width int) []string {
+	if width <= 0 {
+		return []string{s}
+	}
+	var lines []string
+	runes := []rune(s)
+	for len(runes) > width {
+		lines = append(lines, string(runes[:width]))
+		runes = runes[width:]
+	}
+	lines = append(lines, string(runes))
+	return lines
+}
 
-	return result.String()
+func sortedKeys(m map[string]interface{}) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func padRight(s string, length int) string {
-	if len(s) >= length {
-		return s[:length]
+	runes := []rune(s)
+	if len(runes) >= length {
+		return string(runes[:length])
 	}
-	return s + strings.Repeat(" ", length-len(s))
+	return s + strings.Repeat(" ", length-len(runes))
 }
 
 func contains(slice []string, item string) bool {
@@ -403,4 +519,9 @@ func contains(slice []string, item string) bool {
 		}
 	}
 	return false
+}
+
+// formatMapAsTable is kept for backward compatibility
+func formatMapAsTable(m map[string]interface{}) string {
+	return formatMapAsVerticalTable(m)
 }
